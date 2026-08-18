@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# 测试与工具缓存
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 实验产物（大文件/生成物不入库）
+experiments/out/
+*.log
+
+# 编辑器
+.idea/
+.vscode/
+.DS_Store
