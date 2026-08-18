@@ -12,8 +12,9 @@
 4. 检测：逐带 z 检验（逐带 p0），uid = Σ (z_b > 0) << b，
    存在性得分 = Σ|z_b|；点积形式 ⟨v, τ_uid⟩ = Σ z_b·(2·bit_b − 1)
 
-中文路线（§13.5）：待办。本模块的 tokenizer/词典均可注入，
-语言相关逻辑隔离在构造参数，统计管线 100% 共享（§13.8 结论）。
+中文路线（§13.5）：本模块的 tokenizer/词典均可注入，
+语言相关逻辑隔离在 (language_tag, dictionary, tokenizer) 三元组，
+统计管线 100% 共享（§13.8 结论的代码化）。
 """
 from __future__ import annotations
 
@@ -22,7 +23,7 @@ import hmac
 import random
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Sequence
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .keys import KeyContext, derive_key
 from .synonym_data import EN_SYNONYMS_EXTRA, EN_SYNONYMS_RAW
@@ -36,6 +37,44 @@ _EN_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
 def _split_keep_seps(text: str) -> List[str]:
     """把文本切成 [词 | 非词] 交替片段，保留原始分隔符以无损重组。"""
     return re.split(r"([A-Za-z]+(?:'[A-Za-z]+)?)", text)
+
+
+# ---------------------------------------------------------------------------
+# 语言接缝（§13.8）：tokenizer 协议
+#   tokenize(text) -> List[(raw片段, norm词 or None)]
+#   join(raw) 必须无损还原原文；norm 是词典查询键（英文小写、中文原样）
+# 统计管线（embed/detect/calibrate）对语言一无所知。
+# ---------------------------------------------------------------------------
+Tokenizer = Callable[[str], List[Tuple[str, Optional[str]]]]
+
+
+def en_tokenizer(text: str) -> List[Tuple[str, Optional[str]]]:
+    """英文默认分词：正则切词保留分隔符，词片段给出小写 norm。"""
+    return [
+        (p, p.lower()) if p and _EN_TOKEN_RE.fullmatch(p) else (p, None)
+        for p in _split_keep_seps(text)
+    ]
+
+
+def make_zh_tokenizer() -> Tokenizer:
+    """中文分词：前向最大匹配（双字词优先），复用 ZhAdapter。
+
+    词典 = ZH_SYNONYMS_RAW 全部词条；命中词典的双字 token 给出 norm=自身，
+    其余（单字、标点、ASCII 连续段）norm=None 原样保留。
+    """
+    from .synonym_data import ZH_SYNONYMS_RAW
+    from .zh import ZhAdapter
+
+    adapter = ZhAdapter()  # 默认词典 = ZH_SYNONYMS_RAW 主词条 + 候选词
+    dict_words = adapter._dict_words
+
+    def _tokenize(text: str) -> List[Tuple[str, Optional[str]]]:
+        return [
+            (tok, tok if tok in dict_words else None)
+            for tok in adapter.tokenize(text)
+        ]
+
+    return _tokenize
 
 
 class GreenlistCodec:
@@ -57,6 +96,7 @@ class GreenlistCodec:
         n_bands: int = DEFAULT_N_BANDS,
         dictionary: Optional[Dict[str, List[str]]] = None,
         language_tag: bytes = b"en",
+        tokenizer: Optional[Tokenizer] = None,
     ) -> None:
         if n_bands < 1:
             raise ValueError("n_bands must be >= 1")
@@ -73,8 +113,25 @@ class GreenlistCodec:
             KeyContext(session_salt=session_salt, info=b"greenlist:band", tag=language_tag),
         )
 
-        if dictionary is None:
-            dictionary = {**EN_SYNONYMS_RAW, **EN_SYNONYMS_EXTRA}
+        # --- 语言接缝装配（§13.8）：语言差异 = (词典, 分词器) 二元组 ---
+        if language_tag == b"zh":
+            if dictionary is None:
+                from .synonym_data import ZH_SYNONYMS_RAW
+
+                dictionary = ZH_SYNONYMS_RAW
+            if tokenizer is None:
+                tokenizer = make_zh_tokenizer()
+        else:
+            if dictionary is None:
+                dictionary = {**EN_SYNONYMS_RAW, **EN_SYNONYMS_EXTRA}
+            if tokenizer is None:
+                tokenizer = en_tokenizer
+        self._tokenizer = tokenizer
+
+        # 全部词条集合（含被过滤组的词），供边界稳定性检查用
+        self._all_words: set = set()
+        for members in dictionary.values():
+            self._all_words.update(members)
 
         # --- 必修课 1：不相交划分（先到先得）---
         word_owner: Dict[str, str] = {}
@@ -144,12 +201,13 @@ class GreenlistCodec:
         """
         counts: Dict[int, Tuple[int, int]] = {b: (0, 0) for b in range(self.n_bands)}
         for text in corpus:
-            for tok in _EN_TOKEN_RE.findall(text):
-                tok = tok.lower()
-                b = self._w2band.get(tok)
+            for _raw, norm in self._tokenizer(text):
+                if norm is None:
+                    continue
+                b = self._w2band.get(norm)
                 if b is not None:
                     n, g = counts[b]
-                    counts[b] = (n + 1, g + self.green(tok))
+                    counts[b] = (n + 1, g + self.green(norm))
         for b, (n, g) in counts.items():
             if n > 0:
                 self._p0[b] = (g + pseudocount) / (n + 2.0 * pseudocount)
@@ -160,6 +218,22 @@ class GreenlistCodec:
     # ------------------------------------------------------------------
     # 嵌入（post-hoc 同义替换）
     # ------------------------------------------------------------------
+    def _boundary_safe(self, prev_char: str, choice: str, next_char: str) -> bool:
+        """边界稳定性检查（中文连续书写的特有坑，英文天然安全）。
+
+        双字词替换可能引发下游分词边界漂移：如 "项|指标" 替换 "指标"->"目的"
+        后，重新分词把 "项目" 切成词典词，漂移产物落错频带带错颜色，
+        污染逐带统计（实测 53 个漂移词可把 z 打成 -1.69）。
+
+        预防：替换词与左右邻字符的拼接不得构成词典词。
+        英文词有天然分隔符，邻字符为空格/标点，拼接恒非词典词，自动通过。
+        """
+        if prev_char and (prev_char + choice[0]) in self._all_words:
+            return False
+        if next_char and (choice[-1] + next_char) in self._all_words:
+            return False
+        return True
+
     def embed(
         self,
         text: str,
@@ -181,24 +255,34 @@ class GreenlistCodec:
             raise ValueError(f"uid must fit in {self.n_bands} bits")
         bits = [(uid >> b) & 1 for b in range(self.n_bands)]
 
-        parts = _split_keep_seps(text)
+        parts = self._tokenizer(text)
         out: List[str] = []
-        for part in parts:
-            low = part.lower()
-            b = self._w2band.get(low)
+        last_char = ""  # 已输出文本的最后一个字符（边界检查用）
+        for i, (raw, norm) in enumerate(parts):
+            b = self._w2band.get(norm) if norm is not None else None
+            next_char = parts[i + 1][0][:1] if i + 1 < len(parts) else ""
             if b is None or rng.random() >= bias:
-                out.append(part)
+                out.append(raw)
+                if raw:
+                    last_char = raw[-1]
                 continue
             want = bool(bits[b])
-            pool = [x for x in self._w2group[low] if bool(self.green(x)) == want]
-            if not pool:
-                out.append(part)  # 理论上已过滤，兜底
-            else:
-                choice = rng.choice(pool)
-                # 保留原文的大小写风格（首字母大写 -> 首字母大写）
-                if part[:1].isupper():
-                    choice = choice.capitalize()
-                out.append(choice)
+            pool = [x for x in self._w2group[norm] if bool(self.green(x)) == want]
+            choice = None
+            for cand in rng.sample(pool, len(pool)):  # 随机序 + 边界稳定
+                if self._boundary_safe(last_char, cand, next_char):
+                    choice = cand
+                    break
+            if choice is None:
+                out.append(raw)  # 全部候选边界不稳：保守跳过
+                if raw:
+                    last_char = raw[-1]
+                continue
+            # 保留原文的大小写风格（首字母大写 -> 首字母大写；中文恒 False 无影响）
+            if raw[:1].isupper():
+                choice = choice.capitalize()
+            out.append(choice)
+            last_char = choice[-1]
         return "".join(out)
 
     # ------------------------------------------------------------------
@@ -207,12 +291,13 @@ class GreenlistCodec:
     def detect(self, text: str) -> "BandReport":
         n_per_band = [0] * self.n_bands
         g_per_band = [0] * self.n_bands
-        for tok in _EN_TOKEN_RE.findall(text):
-            tok = tok.lower()
-            b = self._w2band.get(tok)
+        for _raw, norm in self._tokenizer(text):
+            if norm is None:
+                continue
+            b = self._w2band.get(norm)
             if b is not None:
                 n_per_band[b] += 1
-                g_per_band[b] += self.green(tok)
+                g_per_band[b] += self.green(norm)
 
         z_per_band: List[float] = [0.0] * self.n_bands
         uid = 0
