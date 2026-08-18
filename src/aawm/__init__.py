@@ -1,10 +1,10 @@
 """Acrostic Agent Watermark (AAWM).
 
 Agent-level digital watermarking via acrostic-style token transforms.
-v0.4: 句子边界感知指纹 + 词典扩充 + 中文声母支持。
+v0.5: 双信道签名架构 —— 信道 A 段落 Merkle-HMAC 绑定 + 信道 B 绿名单频带统计。
 """
 
-__version__ = "0.4.0"
+__version__ = "0.5.0"
 
 from .keys import derive_key, KeyContext, generate_master_key, generate_session_salt
 from .stats import z_test, DetectionResult
@@ -40,6 +40,8 @@ from .zh import (
     ZhAdapter,
     get_adapter,
 )
+from .greenlist import GreenlistCodec, BandReport, BandStat
+from .binding import DocumentBinder, BindingSeal, BindingVerdict, VerdictKind
 
 __all__ = [
     # 密钥
@@ -85,4 +87,13 @@ __all__ = [
     "get_adapter",
     # detect 模式（遗留）
     "Verifier",
+    # 信道 B：绿名单 × 频带统计（v0.5）
+    "GreenlistCodec",
+    "BandReport",
+    "BandStat",
+    # 信道 A：段落 Merkle-HMAC 绑定（v0.5）
+    "DocumentBinder",
+    "BindingSeal",
+    "BindingVerdict",
+    "VerdictKind",
 ]
