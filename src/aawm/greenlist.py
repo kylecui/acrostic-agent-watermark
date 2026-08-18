@@ -56,21 +56,22 @@ def en_tokenizer(text: str) -> List[Tuple[str, Optional[str]]]:
     ]
 
 
-def make_zh_tokenizer() -> Tokenizer:
+def make_zh_tokenizer(dict_words: Optional[set] = None) -> Tokenizer:
     """中文分词：前向最大匹配（双字词优先），复用 ZhAdapter。
 
-    词典 = ZH_SYNONYMS_RAW 全部词条；命中词典的双字 token 给出 norm=自身，
-    其余（单字、标点、ASCII 连续段）norm=None 原样保留。
+    dict_words=None 时词典 = ZH_SYNONYMS_RAW 全部词条；传入自定义词典时
+    必须覆盖全部候选词（替换后的词也要能被重新切出，否则 token 数变化、
+    detect 命中崩塌 —— exp_real_corpus 实测教训）。命中词典的双字 token
+    给出 norm=自身，其余（单字、标点、ASCII 连续段）norm=None 原样保留。
     """
-    from .synonym_data import ZH_SYNONYMS_RAW
     from .zh import ZhAdapter
 
-    adapter = ZhAdapter()  # 默认词典 = ZH_SYNONYMS_RAW 主词条 + 候选词
-    dict_words = adapter._dict_words
+    adapter = ZhAdapter(dict_words=dict_words)
+    words = adapter._dict_words
 
     def _tokenize(text: str) -> List[Tuple[str, Optional[str]]]:
         return [
-            (tok, tok if tok in dict_words else None)
+            (tok, tok if tok in words else None)
             for tok in adapter.tokenize(text)
         ]
 
@@ -120,7 +121,10 @@ class GreenlistCodec:
 
                 dictionary = ZH_SYNONYMS_RAW
             if tokenizer is None:
-                tokenizer = make_zh_tokenizer()
+                # 分词词典必须与嵌入词典同步（含全部候选词），
+                # 否则替换后的新词切不出来、detect 命中崩塌
+                all_words = {w for ws in dictionary.values() for w in ws}
+                tokenizer = make_zh_tokenizer(dict_words=all_words)
         else:
             if dictionary is None:
                 dictionary = {**EN_SYNONYMS_RAW, **EN_SYNONYMS_EXTRA}
@@ -186,7 +190,7 @@ class GreenlistCodec:
             "n_groups": len(self._groups),
             "n_words": n_words,
             "n_bands": self.n_bands,
-            "min_group_size": min(len(m) for m in self._groups.values()),
+            "min_group_size": min((len(m) for m in self._groups.values()), default=0),
         }
 
     # ------------------------------------------------------------------
@@ -340,6 +344,24 @@ class GreenlistCodec:
     def uid_hamming(self, text: str, uid: int) -> int:
         """检测 UID 与给定 UID 的汉明距。"""
         return bin(self.detect(text).uid ^ uid).count("1")
+
+    def masked_hamming(self, text: str, uid: int) -> Tuple[int, int]:
+        """带掩码汉明距：零覆盖带（n<2）不参与比对。
+
+        返回 (汉明距, 参与比对的带数)。真实语料每带样本稀疏时，
+        零覆盖带默认解 bit=0 会造成系统性翻位（exp_real_corpus 实测：
+        600 词自然文本词典词 38-99，每带 2-6 词，偶发整带零覆盖），
+        注册库匹配应只比较有信号带。
+        """
+        rep = self.detect(text)
+        dist = 0
+        n_active = 0
+        for st in rep.bands:
+            if st.has_signal:
+                n_active += 1
+                if ((rep.uid >> st.band) & 1) != ((uid >> st.band) & 1):
+                    dist += 1
+        return dist, n_active
 
 
 @dataclass(frozen=True)
