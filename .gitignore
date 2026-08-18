@@ -20,3 +20,4 @@ experiments/out/
 .idea/
 .vscode/
 .DS_Store
+corpus/
