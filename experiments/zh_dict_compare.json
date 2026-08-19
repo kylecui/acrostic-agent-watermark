@@ -1,0 +1,91 @@
+{
+  "old4_pd": {
+    "tag": "ZH-A 人民日报 × 词林4位(旧)",
+    "n_groups": 202,
+    "n_words": 538,
+    "roundtrip": "18/18",
+    "dict_words_mean": 34.6,
+    "sumz_marked": 17.4,
+    "sumz_null": 7.6,
+    "ham30_mean": 1.67,
+    "ham30_le1": "44%",
+    "ham50_mean": 3.0,
+    "ham70_mean": 4.83,
+    "sample_diffs": [
+      "现实 → 实际",
+      "它们 → 什么",
+      "流通 → 运作",
+      "革命 → 变革",
+      "家人 → 亲人",
+      "主动 → 被动",
+      "自由 → 障碍",
+      "专业 → 业余"
+    ]
+  },
+  "new8_pd": {
+    "tag": "ZH-A 人民日报 × 词林8位(新)",
+    "n_groups": 836,
+    "n_words": 1914,
+    "roundtrip": "17/18",
+    "dict_words_mean": 130.6,
+    "sumz_marked": 44.9,
+    "sumz_null": 14.7,
+    "ham30_mean": 1.56,
+    "ham30_le1": "61%",
+    "ham50_mean": 5.17,
+    "ham70_mean": 9.83,
+    "sample_diffs": [
+      "有的 → 部分",
+      "传统 → 观念",
+      "关系 → 证书",
+      "家庭 → 家中",
+      "企业 → 商店",
+      "不容 → 拒绝",
+      "现实 → 事实",
+      "市场 → 商场"
+    ]
+  },
+  "old4_hlm": {
+    "tag": "ZH-B 红楼梦 × 词林4位(旧)",
+    "n_groups": 51,
+    "n_words": 123,
+    "roundtrip": "18/18",
+    "dict_words_mean": 15.2,
+    "sumz_marked": 6.9,
+    "sumz_null": 3.4,
+    "ham30_mean": 0.56,
+    "ham30_le1": "89%",
+    "ham50_mean": 1.06,
+    "ham70_mean": 1.5,
+    "sample_diffs": [
+      "兄弟 → 大姐",
+      "子孙 → 子弟",
+      "心里 → 脖子",
+      "那里 → 手里",
+      "那里 → 手里"
+    ]
+  },
+  "new8_hlm": {
+    "tag": "ZH-B 红楼梦 × 词林8位(新)",
+    "n_groups": 414,
+    "n_words": 912,
+    "roundtrip": "18/18",
+    "dict_words_mean": 56.2,
+    "sumz_marked": 25.4,
+    "sumz_null": 11.6,
+    "ham30_mean": 1.89,
+    "ham30_le1": "50%",
+    "ham50_mean": 3.67,
+    "ham70_mean": 6.5,
+    "sample_diffs": [
+      "看看 → 见见",
+      "有的 → 有些",
+      "如今 → 今日",
+      "父母 → 上下",
+      "夫人 → 奶奶",
+      "交到 → 交给",
+      "父母 → 老人",
+      "日子 → 工夫"
+    ]
+  }
+}

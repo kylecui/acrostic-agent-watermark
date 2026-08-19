@@ -28,6 +28,11 @@ from dict_build import build_cilin_dict, build_wordnet_dict
 KEY = bytes(range(32))
 SALT = b"real-corpus-2026"
 
+# 中文词典：8 位哈工大词林扩展版（corpus/dict/cilin_extended.txt，
+# 原子词群严格同义，6612 组 / 24530 双字词）；旧 4 位人民日报标注版
+# （corpus/dict/cilin_utf8.txt，571 组）保留供对照
+CILIN8_PATH = "corpus/dict/cilin_extended.txt"
+
 
 # ---------------------------------------------------------------- 语料加载
 def load_gutenberg() -> list[str]:
@@ -151,7 +156,11 @@ def synonym_attack(codec: GreenlistCodec, text: str, frac: float, seed: int):
 def run_lang(tag: str, lang_bytes: bytes, test_docs: list[str], null_docs: list[str],
              raw_dict: dict, zh_mode: bool = False):
     base = GreenlistCodec(KEY, SALT, language_tag=lang_bytes)
-    groups = filter_dict_by_corpus(raw_dict, null_docs + test_docs, base._tokenizer, zh_mode=zh_mode)
+    # 8 位原子词群为严格同义词（'=' 标记），zh 组大小上限放宽到 20
+    groups = filter_dict_by_corpus(
+        raw_dict, null_docs + test_docs, base._tokenizer,
+        max_group=20 if zh_mode else 8, zh_mode=zh_mode,
+    )
     codec = GreenlistCodec(KEY, SALT, dictionary=groups, language_tag=lang_bytes)
     n_words = len({w for ws in groups.values() for w in ws})
     print(f"\n===== {tag} =====")
@@ -230,18 +239,18 @@ def main():
     pd = load_people_daily()
     rng.shuffle(pd)
     pd_test, pd_null = pd[:18], pd[18:60]
-    out["zh_same_domain"] = run_lang("ZH: 人民日报 × 词林（同域）", b"zh",
-                                     pd_test, pd_null, build_cilin_dict(), zh_mode=True)
+    out["zh_same_domain"] = run_lang("ZH: 人民日报 × 词林8位（同域）", b"zh",
+                                     pd_test, pd_null, build_cilin_dict(CILIN8_PATH), zh_mode=True)
 
-    # ---- ZH-B: 红楼梦 × 词林（跨域对照）----
+    # ---- ZH-B: 红楼梦 × 词林8位（跨域对照）----
     hlm = load_hlm()
     zh_windows = []
     for d in hlm[:40]:
         zh_windows.extend(windows_zh(d, n_win=3))
     rng.shuffle(zh_windows)
-    out["zh_cross_domain"] = run_lang("ZH: 红楼梦 × 词林（跨域对照）", b"zh",
+    out["zh_cross_domain"] = run_lang("ZH: 红楼梦 × 词林8位（跨域对照）", b"zh",
                                       zh_windows[:18], zh_windows[18:50],
-                                      build_cilin_dict(), zh_mode=True)
+                                      build_cilin_dict(CILIN8_PATH), zh_mode=True)
 
     with open("/tmp/real_corpus_result.json", "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
