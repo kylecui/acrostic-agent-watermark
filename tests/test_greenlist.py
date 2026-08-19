@@ -6,8 +6,6 @@ import pytest
 from aawm.greenlist import BandReport, GreenlistCodec
 from aawm.keys import generate_master_key, generate_session_salt
 
-pytestmark = pytest.mark.order(4)
-
 
 def make_codec(seed: int = 42) -> GreenlistCodec:
     rng = random.Random(seed)

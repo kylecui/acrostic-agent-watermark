@@ -12,8 +12,6 @@ from aawm.binding import (
 )
 from aawm.keys import generate_master_key, generate_session_salt
 
-pytestmark = pytest.mark.order(5)
-
 DOC = (
     "The system collects telemetry from distributed agents.\n\n"
     "Each agent embeds a per-user watermark into its output tokens.\n\n"

@@ -213,7 +213,7 @@ class TestLiteLLMAdapter:
         uak = MagicMock()
         uak.metadata = {"user_id": 42}
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.new_event_loop().run_until_complete(
             litellm_proxy.async_post_call_success_hook(
                 data={}, user_api_key_dict=uak, response=response
             )
@@ -244,7 +244,7 @@ class TestLiteLLMAdapter:
         uak = MagicMock()
         uak.metadata = {"user_id": 42}
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.new_event_loop().run_until_complete(
             litellm_proxy.async_post_call_success_hook(
                 data={}, user_api_key_dict=uak, response=response
             )
@@ -306,7 +306,7 @@ class TestLiteLLMAdapter:
         response = FakeResponse()
         uak = MagicMock()
 
-        result = asyncio.get_event_loop().run_until_complete(
+        result = asyncio.new_event_loop().run_until_complete(
             litellm_proxy.async_post_call_success_hook(
                 data={}, user_api_key_dict=uak, response=response
             )
