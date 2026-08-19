@@ -2,9 +2,10 @@
 
 Agent-level digital watermarking via acrostic-style token transforms.
 v0.5: 双信道签名架构 —— 信道 A 段落 Merkle-HMAC 绑定 + 信道 B 绿名单频带统计。
+v0.6: 通用 Agent 插件层 —— Facade / 中间件 / 流式 / 框架适配器。
 """
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 from .keys import derive_key, KeyContext, generate_master_key, generate_session_salt
 from .stats import z_test, DetectionResult
@@ -97,3 +98,14 @@ __all__ = [
     "BindingVerdict",
     "VerdictKind",
 ]
+
+# v0.6 插件层便捷导出（懒加载，避免循环导入）
+# 完整 API 见 aawm.plugins
+def __getattr__(name: str):  # type: ignore
+    if name in ("Watermarker", "EmbedResult", "TraceResult", "KeyStore",
+                "UIDRegistry", "WatermarkMiddleware", "StreamingWatermarker",
+                "Context", "ContextChain", "generate_key"):
+        from . import plugins
+        return getattr(plugins, name)
+    raise AttributeError(f"module 'aawm' has no attribute {name!r}")
+

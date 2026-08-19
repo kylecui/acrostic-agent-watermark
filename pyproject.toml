@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "acrostic-agent-watermark"
-version = "0.1.0"
-description = "Agent-level digital watermarking via acrostic-style token transforms"
+version = "0.6.0"
+description = "Agent-level digital watermarking — universal Agent plugin for user ID traceability"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -16,9 +16,15 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0"]
+langchain = ["langchain>=0.3"]
+litellm = ["litellm>=1.40"]
+server = ["fastapi>=0.100", "uvicorn>=0.20", "pydantic>=2.0"]
+dev = ["pytest>=7.0", "pytest-asyncio", "httpx"]
 nlp = ["nltk>=3.8"]
 llm = ["openai>=1.0", "anthropic>=0.20"]
+
+[project.scripts]
+aawm = "aawm.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
