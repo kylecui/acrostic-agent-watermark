@@ -29,5 +29,8 @@ aawm = "aawm.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+aawm = ["data/*.json"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

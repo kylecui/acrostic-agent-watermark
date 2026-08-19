@@ -1,9 +1,19 @@
-"""同义词典数据（v0.4）。
+"""同义词典数据（v0.4 手工策划；v0.9 扩容为数据文件加载）。
 
-英文：`EN_SYNONYMS_RAW`（原 v0.2 主词典）+ `EN_SYNONYMS_EXTRA`（v0.4 扩充），
+英文：`EN_SYNONYMS_RAW`（v0.2 主词典）+ `EN_SYNONYMS_EXTRA`（v0.4 扩充），
 经 `embedder._build_stable_synonyms` 稳定化管线合并为最终词典。
 
 中文：`ZH_SYNONYMS_RAW`，配合 `zh.ZhAdapter` 使用。
+
+v0.9 词典扩容（exp_dict_expansion 实验定稿）：
+    生产默认词典从手工策划小词典扩为「策划组 ∪ 词林/WordNet 大词典」，
+    数据文件在 `src/aawm/data/{zh,en}_synonyms.json`（由
+    experiments/gen_prod_dicts.py 生成）。GreenlistCodec 的默认词典
+    走 `load_default_zh_dictionary()` / `load_default_en_dictionary()`；
+    数据文件缺失时回退手工策划词典（保证最小可用）。
+    实测收益（30 篇真实语料攻击谱，soft n>=1 匹配）：
+      ZH: paws 27→30、s30 23→30、s50 12→23、存在性间隔 +7.6→+19.2
+      EN: s30 28→29、s50 21→27、存在性间隔 +13.3→+42.0
 
 词条设计原则：
 1. 单词约束：英文词条必须是单个词（无空格/连字符），否则破坏 token 数；
@@ -15,7 +25,51 @@
 """
 from __future__ import annotations
 
-from typing import Dict, List
+import json
+import os
+from typing import Dict, List, Optional
+
+_DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
+
+_DEFAULT_ZH_CACHE: Optional[Dict[str, List[str]]] = None
+_DEFAULT_EN_CACHE: Optional[Dict[str, List[str]]] = None
+
+
+def _load_groups(filename: str) -> Optional[Dict[str, List[str]]]:
+    """从数据文件加载 {组键: [词...]}；文件缺失返回 None。"""
+    path = os.path.join(_DATA_DIR, filename)
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as f:
+        groups = json.load(f)
+    return {f"g{i}": ws for i, ws in enumerate(groups)}
+
+
+def load_default_zh_dictionary() -> Dict[str, List[str]]:
+    """中文默认同义词典（策划组 ∪ 词林 '=' 严格同义组）。
+
+    数据文件缺失时回退 ZH_SYNONYMS_RAW（手工策划小词典）。
+    """
+    global _DEFAULT_ZH_CACHE
+    if _DEFAULT_ZH_CACHE is None:
+        loaded = _load_groups("zh_synonyms.json")
+        _DEFAULT_ZH_CACHE = loaded if loaded is not None else dict(ZH_SYNONYMS_RAW)
+    return _DEFAULT_ZH_CACHE
+
+
+def load_default_en_dictionary() -> Dict[str, List[str]]:
+    """英文默认同义词典（策划组 ∪ WordNet synset >=3 单词组）。
+
+    数据文件缺失时回退 EN_SYNONYMS_RAW + EN_SYNONYMS_EXTRA。
+    """
+    global _DEFAULT_EN_CACHE
+    if _DEFAULT_EN_CACHE is None:
+        loaded = _load_groups("en_synonyms.json")
+        _DEFAULT_EN_CACHE = (
+            loaded if loaded is not None
+            else {**EN_SYNONYMS_RAW, **EN_SYNONYMS_EXTRA}
+        )
+    return _DEFAULT_EN_CACHE
 
 # ---------------------------------------------------------------------------
 # 英文原始词典（v0.2 的 _SYNONYMS_RAW 搬迁至此，内容不变）

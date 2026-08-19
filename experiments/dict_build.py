@@ -32,27 +32,33 @@ _HAN_RE = re.compile(r"^[\u4e00-\u9fff]{2}$")
 _CILIN8_CODE_RE = re.compile(r"^[A-Z][a-z]\d{2}[A-Z]\d{2}$")
 
 
-def _parse_cilin8(path: str) -> Dict[str, List[str]]:
-    """解析哈工大扩展版（8 位原子词群），只取 '=' 同义行。
+def _parse_cilin8(path: str, include_near: bool = False) -> Dict[str, List[str]]:
+    """解析哈工大扩展版（8 位原子词群）。
 
     行格式: `Aa01A01= 人 士 人物 人士 人氏 人选`
-    `#`（同类）与 `@`（独立）语义纯度不足，不构成可替换同义组。
+    '='（同义）必收；include_near=True 时额外收 '#'（同类近义）——
+    近义替换正是改写攻击的典型操作，纳入可提高词典覆盖（实测
+    +14k 双字词），代价是替换后语义保真度略降。
+    '@'（独立词，组内仅 1 词）无替换能力，始终弃用。
     """
     groups: Dict[str, List[str]] = {}
+    marks = ("=", "#") if include_near else ("=",)
     with open(path, encoding="utf-8") as f:
         for line in f:
-            code, mark, words = line.partition("=")
-            if mark != "=":
-                continue
-            code = code.strip()
-            if not _CILIN8_CODE_RE.match(code):
-                continue
-            candidates = words.strip().split()
-            bg = sorted(w for w in candidates if _HAN_RE.match(w))
-            if code[0] in _ZH_EXCLUDE_CATS:
-                continue
-            if 2 <= len(bg) <= _CILIN8_MAX_GROUP:
-                groups[f"cilin:{code}"] = bg
+            for mark in marks:
+                code, sep, words = line.partition(mark)
+                if sep != mark:
+                    continue
+                code = code.strip()
+                if not _CILIN8_CODE_RE.match(code):
+                    continue
+                candidates = words.strip().split()
+                bg = sorted(w for w in candidates if _HAN_RE.match(w))
+                if code[0] in _ZH_EXCLUDE_CATS:
+                    continue
+                if 2 <= len(bg) <= _CILIN8_MAX_GROUP:
+                    groups[f"cilin:{code}"] = bg
+                break
     return groups
 
 
@@ -81,27 +87,33 @@ def _parse_cilin4(path: str) -> Dict[str, List[str]]:
 _CILIN8_MAX_GROUP = 20
 
 
-def build_cilin_dict(path: str | None = None) -> Dict[str, List[str]]:
+def build_cilin_dict(path: str | None = None,
+                     include_near: bool = False) -> Dict[str, List[str]]:
     """从词林构建中文同义词组 {组键: [双字词...]}。
 
     自动识别两种格式：行内含 '=' 且首 token 为 7 位原子词群编码 → 8 位
-    扩展版；否则按人民日报标注版解析。
+    扩展版；否则按人民日报标注版解析。include_near 仅对 8 位版生效
+    （额外纳入 '#' 近义行）。
     """
     path = path or os.path.join(CORPUS, "dict", "cilin_utf8.txt")
     with open(path, encoding="utf-8") as f:
         head = f.readline()
     code_part = head.split("=", 1)[0].strip()
     if _CILIN8_CODE_RE.match(code_part):
-        return _parse_cilin8(path)
+        return _parse_cilin8(path, include_near=include_near)
     return _parse_cilin4(path)
 
 
-def build_wordnet_dict(wn_dir: str | None = None) -> Dict[str, List[str]]:
+def build_wordnet_dict(wn_dir: str | None = None,
+                       single_word_only: bool = False) -> Dict[str, List[str]]:
     """从 WordNet 3.x data.* 构建 {synset_id: [词形...]}。
 
     行格式（无缩进才为 synset 行）:
       offset lex_filenum ss_type w_cnt w1 lex_id1 w2 lex_id2 ... ptr_cnt ... | gloss
     ss_type: n/v/a/r/s（s=形容词卫星，并入 a 处理）。
+
+    single_word_only=True 时剔除含空格的多词条目（如 "look up"）——
+    英文 tokenizer 是空白分词，多词条目无法作为替换单元。
     """
     wn_dir = wn_dir or os.path.join(CORPUS, "dict", "wordnet")
     groups: Dict[str, List[str]] = {}
@@ -128,6 +140,11 @@ def build_wordnet_dict(wn_dir: str | None = None) -> Dict[str, List[str]]:
                         words.append(w)
                     idx += 2  # 跳过 lex_id
                 words = sorted(set(words))
+                if single_word_only:
+                    # 剔除多词短语与单字母词：单字母词命中罗马数字/单位
+                    # synset（I→One、a→angstrom 类错误替换的根源）
+                    words = [w for w in words
+                             if " " not in w and len(w) >= 2]
                 if 2 <= len(words) <= 10:
                     groups[f"wn:{fname}:{offset}:{ss_type}"] = words
     return groups

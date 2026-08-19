@@ -262,10 +262,10 @@ class ZhAdapter(LanguageAdapter):
         if dict_words is not None:
             self._dict_words = dict_words
         else:
-            from .synonym_data import ZH_SYNONYMS_RAW
+            # v0.9 扩容：与 GreenlistCodec 默认词典同步（词林扩容版）
+            from .synonym_data import load_default_zh_dictionary
             ws = set()
-            for key, cands in ZH_SYNONYMS_RAW.items():
-                ws.add(key)
+            for cands in load_default_zh_dictionary().values():
                 ws.update(cands)
             self._dict_words = ws
 

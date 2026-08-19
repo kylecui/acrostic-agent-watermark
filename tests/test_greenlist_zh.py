@@ -66,10 +66,11 @@ def zh_paraphrase(codec: GreenlistCodec, text: str, frac: float, seed: int):
 
 class TestZhPipeline:
     def test_pipeline_invariants(self):
-        """双色组过滤后组数随密钥浮动（实测 238-246/260），不变量恒成立。"""
+        """双色组过滤后组数随密钥浮动（v0.9 词典扩容后实测 ~4.5k/6.3k），
+        不变量恒成立。"""
         codec = make_codec()
         st = codec.stats
-        assert 200 <= st["n_groups"] <= 260
+        assert 4000 <= st["n_groups"] <= 6300
         assert st["n_bands"] == 16
         # 双色不变量
         for members in codec._groups.values():

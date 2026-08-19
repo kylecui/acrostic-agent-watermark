@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .keys import KeyContext, derive_key
-from .synonym_data import EN_SYNONYMS_EXTRA, EN_SYNONYMS_RAW
+from .synonym_data import load_default_en_dictionary, load_default_zh_dictionary
 
 DEFAULT_N_BANDS = 16
 _UID_BITS = 16  # v0.5 固定 16-bit UID（与 N_BANDS 对齐）
@@ -118,9 +118,8 @@ class GreenlistCodec:
         # --- 语言接缝装配（§13.8）：语言差异 = (词典, 分词器) 二元组 ---
         if language_tag == b"zh":
             if dictionary is None:
-                from .synonym_data import ZH_SYNONYMS_RAW
-
-                dictionary = ZH_SYNONYMS_RAW
+                # v0.9 扩容：策划组 ∪ 词林 '='（~6.3k 组 / 24k 词）
+                dictionary = load_default_zh_dictionary()
             if tokenizer is None:
                 # 分词词典必须与嵌入词典同步（含全部候选词），
                 # 否则替换后的新词切不出来、detect 命中崩塌
@@ -128,7 +127,8 @@ class GreenlistCodec:
                 tokenizer = make_zh_tokenizer(dict_words=all_words)
         else:
             if dictionary is None:
-                dictionary = {**EN_SYNONYMS_RAW, **EN_SYNONYMS_EXTRA}
+                # v0.9 扩容：策划组 ∪ WordNet>=3 单词组（~6.4k 组 / 23k 词）
+                dictionary = load_default_en_dictionary()
             if tokenizer is None:
                 tokenizer = en_tokenizer
         self._tokenizer = tokenizer
