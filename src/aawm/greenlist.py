@@ -292,7 +292,19 @@ class GreenlistCodec:
     # ------------------------------------------------------------------
     # 检测（逐带 z 检验 + UID 解码 + 存在性得分）
     # ------------------------------------------------------------------
-    def detect(self, text: str) -> "BandReport":
+    def detect(self, text: str, *, min_n: int = 2) -> "BandReport":
+        """检测水印并解码 UID。
+
+        Args:
+            text: 嫌疑文本
+            min_n: 参与检测的最小带内词数（默认 2，过滤单词噪声带）。
+                设为 1 时弱证据带（n=1）也参与：其 z 符号正确率实测
+                79%~100%，净贡献为正，适合注册库软判决匹配
+                （见 soft_match）。
+
+        Returns:
+            BandReport
+        """
         n_per_band = [0] * self.n_bands
         g_per_band = [0] * self.n_bands
         for _raw, norm in self._tokenizer(text):
@@ -309,7 +321,7 @@ class GreenlistCodec:
         band_stats: List[BandStat] = []
         for b in range(self.n_bands):
             n, g = n_per_band[b], g_per_band[b]
-            if n < 2:
+            if n < min_n:
                 band_stats.append(BandStat(band=b, n=n, green=g, p0=self._p0_of(b), z=0.0, has_signal=False))
                 continue
             p0 = self._p0_of(b)
@@ -362,6 +374,58 @@ class GreenlistCodec:
                 if ((rep.uid >> st.band) & 1) != ((uid >> st.band) & 1):
                     dist += 1
         return dist, n_active
+
+    def soft_match(
+        self,
+        text: str,
+        candidates: Sequence[int],
+        *,
+        min_n: int = 1,
+        margin: float = 0.0,
+    ) -> Tuple[Optional[int], float, float]:
+        """软判决注册库匹配（鲁棒性增强）。
+
+        对候选 UID 逐带 z 打点积分 s(c) = Σ_b z_b·(2·bit_b(c) − 1)，
+        返回得分最高的候选。零覆盖带（n < min_n）不参与。
+
+        与 masked_hamming 的硬判决不同，soft_match 直接利用逐带 z 的
+        幅度信息。弱证据带（n=1）的 z 符号虽有噪声（攻击下实测正确率
+        79%~100%），但净贡献为正——30% 同组改写攻击下 min_n=1 比 2
+        的匹配率提升 20→27/30（exp_soft_match 实测）。
+
+        Args:
+            text: 嫌疑文本
+            candidates: 候选 UID 列表（如注册库全部 UID）
+            min_n: 参与检测的最小带内词数（默认 1，利用弱证据带）
+            margin: 置信阈值。最优与次优得分差 < margin 时 abstain
+                （返回 best_uid=None）。实测 margin=2.0 可把错误匹配
+                全部转为 abstain（precision→100%），代价是略降召回。
+
+        Returns:
+            (best_uid, best_score, gap)：
+                best_uid: 得分最高的候选；gap < margin 时为 None（不可靠）
+                best_score: 最优候选的 soft 得分
+                gap: 最优与次优候选的得分差
+        """
+        cands = list(dict.fromkeys(candidates))  # 去重保序
+        if not cands:
+            return None, 0.0, 0.0
+        rep = self.detect(text, min_n=min_n)
+        z_by_band = {st.band: st.z for st in rep.bands if st.has_signal}
+
+        def _score(c: int) -> float:
+            s = 0.0
+            for b, z in z_by_band.items():
+                s += z * (1 if ((c >> b) & 1) else -1)
+            return s
+
+        scored = sorted(((_score(c), c) for c in cands), key=lambda x: x[0], reverse=True)
+        best_score, best_uid = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else best_score - margin - 1.0
+        gap = best_score - second_score
+        if gap < margin:
+            return None, best_score, gap
+        return best_uid, best_score, gap
 
 
 @dataclass(frozen=True)

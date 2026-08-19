@@ -8,6 +8,7 @@
 |---|---|---|
 | 用 LangChain v1 构建 Agent | [方式一：LangChain 中间件](#方式一langchain-v1-中间件) | 3 行 |
 | 走 LiteLLM Proxy 网关 | [方式二：LiteLLM Proxy 钩子](#方式二litellm-proxy-钩子) | 配置文件 |
+| 直接用 OpenAI SDK | [方式二·五：OpenAI SDK 包装](#方式二五openai-sdk-包装) | 2 行 |
 | 自研 Agent / 其他框架 | [方式三：纯 SDK 调用](#方式三纯-sdk-调用) | 5-10 行 |
 
 ---
@@ -20,6 +21,7 @@
 pip install -e .                        # 基础（纯算法层）
 pip install -e ".[langchain]"           # + LangChain 适配器
 pip install -e ".[litellm]"             # + LiteLLM 适配器
+pip install -e ".[llm]"                 # + OpenAI SDK 适配器
 pip install -e ".[server]"              # + 检测服务（FastAPI）
 ```
 
@@ -130,6 +132,44 @@ litellm-admin create_key \
 
 ---
 
+## 方式二·五：OpenAI SDK 包装
+
+适合直接使用 `openai.OpenAI()` / `openai.AsyncOpenAI()` 的应用（不经过 LangChain/LiteLLM）。
+
+```python
+from openai import OpenAI, AsyncOpenAI
+from aawm.plugins import Watermarker
+from aawm.plugins.adapters.openai_v1 import (
+    wrap_openai_client,
+    wrap_async_openai_client,
+)
+
+watermarker = Watermarker.from_config("key.json", "registry.json")
+
+# 同步客户端
+client = wrap_openai_client(OpenAI(), watermarker)
+resp = client.chat.completions.create(
+    model="gpt-4o",
+    messages=[...],
+    user_id="user-alice",      # ← 用户标识（也支持 headers/contextvars/env）
+)
+print(resp.choices[0].message.content)  # 已自动嵌水印
+
+# 异步客户端
+async_client = wrap_async_openai_client(AsyncOpenAI(), watermarker)
+resp = await async_client.chat.completions.create(
+    model="gpt-4o", messages=[...], user_id="user-bob",
+)
+```
+
+**行为说明**：
+- `wrap_*` 是纯 duck-typing 包装（import 无需安装 openai），包装后 `create` 返回的 `message.content` 自动嵌水印
+- `stream=True` 时自动包装流，**句子级缓冲重写**（与方式二一致）
+- `user_id` 缺省时按 ContextChain 三级解析（请求头 `X-AAWM-User-Id` / contextvars / 环境变量）
+- 同样 fail-open：任何嵌入异常都透传原文
+
+---
+
 ## 方式三：纯 SDK 调用
 
 适合自研 Agent 或任何 Python 后处理场景。
@@ -203,6 +243,25 @@ print(trace.confidence)      # 置信度 [0,1]
 print(trace.tampered)        # None=无seal无法判定 / True=被篡改 / False=未篡改
 print(trace.tampered_paragraphs)  # 被改段落索引
 ```
+
+#### 软判决匹配（v0.7，改写攻击下更鲁棒）
+
+默认溯源走"解码 UID + 汉明最近邻"硬判决。对疑似被改写的文本，
+开启软判决注册库匹配（逐带 z 打点积分，弱证据带参与），
+30% 同组改写攻击下匹配率 20→27/30：
+
+```python
+trace = watermarker.trace(
+    suspect_text,
+    session_salt=stored_salt,
+    soft_match=True,      # 启用软判决匹配
+    match_margin=2.0,     # 最优-次优得分差下限（低于则 abstain，uid=None）
+)
+print(trace.soft_gap)     # 最优-次优得分差；gap<margin 说明置信不足需复核
+```
+
+注意：软判决只提升"有损文本的归属能力"，不改变存在性判定；
+`trace.watermarked` 仍由 Σ|z| 阈值决定（未嵌水印文本不会被误归因）。
 
 ### CLI 溯源
 

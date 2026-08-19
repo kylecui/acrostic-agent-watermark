@@ -54,8 +54,18 @@ result = wm.trace(
     session_salt: bytes | None = None,   # 嵌入时的盐（强烈建议传）
     seal: BindingSeal | None = None,     # 嵌入时的签名（篡改检测用）
     language: str | None = None,
+    soft_match: bool = False,            # v0.7 软判决注册库匹配（见下）
+    match_margin: float = 2.0,           # 软判决置信阈值（最优-次优得分差下限）
 ) -> TraceResult
 ```
+
+**软判决注册库匹配（v0.7 鲁棒性增强）**：`soft_match=True` 时，用
+`GreenlistCodec.soft_match` 对注册库全部 UID 逐带 z 打点积分
+（min_n=1，弱证据带参与），替代"解码 UID + 汉明最近邻"路径。
+只在水印存在性判定通过后采纳软匹配结果（soft_match 是候选区分器，
+null 文本也可能与某候选方向对齐）。实测：30% 同组改写攻击下
+匹配率 20→27/30，PAWS 温和改写 22→25/30；`match_margin=2.0`
+可把错误匹配全部转为 abstain。
 
 ### 其他方法
 
@@ -90,7 +100,7 @@ class EmbedResult:
 class TraceResult:
     watermarked: bool              # 存在性判定
     uid: int | None                # 解码 UID（watermarked=False 时 None）
-    user: str | None               # 注册库最近邻匹配的别名
+    user: str | None               # 注册库匹配的别名
     hamming_dist: int              # 与最近邻的汉明距（-1=无注册库/无匹配）
     confidence: float              # [0,1]，existence_score/confidence_scale
     tampered: bool | None          # None=无 seal；True=被篡改；False=完整
@@ -98,6 +108,8 @@ class TraceResult:
     band_report: BandReport        # 逐带明细（算法层透传）
     existence_score: float         # Σ|z|
     n_dict_words: int              # 词典命中数
+    soft_uid: int | None           # 软判决匹配 UID（soft_match=True 时）
+    soft_gap: float                # 软判决最优-次优得分差（未启用=-1.0）
 ```
 
 ## DetectionThresholds
@@ -270,6 +282,27 @@ setup_hooks(watermarker, context_chain=None, *, min_text_length=50)
 ```
 
 未 `setup_hooks` 时 hooks 透传（不嵌入不报错）。
+
+### OpenAI SDK（`aawm.plugins.adapters.openai_v1`）
+
+```python
+from aawm.plugins.adapters.openai_v1 import (
+    wrap_openai_client,
+    wrap_async_openai_client,
+)
+
+client = wrap_openai_client(openai.OpenAI(), watermarker,
+                            context_chain=None, *,
+                            min_text_length=50,
+                            skip_if_no_context=True)
+# 包装后 client.chat.completions.create(...) 的输出自动嵌水印
+# stream=True 时自动做句子级缓冲重写；user_id 可从 create 参数/请求头/contextvars 解析
+
+async_client = wrap_async_openai_client(openai.AsyncOpenAI(), watermarker)
+# 用法同同步版，await create(...) 输出自动嵌水印
+```
+
+纯 duck-typing 包装（import 无需安装 openai），fail-open 语义与其余适配器一致。
 
 ---
 

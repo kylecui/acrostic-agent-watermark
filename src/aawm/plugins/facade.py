@@ -70,6 +70,8 @@ class TraceResult:
         band_report: 逐带明细
         existence_score: 原始存在性得分 Σ|z|
         n_dict_words: 词典命中词数
+        soft_uid: 软判决匹配结果 UID（trace(soft_match=True) 时填充；未匹配=低置信时为 None）
+        soft_gap: 软判决最优与次优候选得分差（soft 路径的置信度量；未启用时为 -1.0）
     """
     watermarked: bool
     uid: Optional[int]
@@ -81,6 +83,8 @@ class TraceResult:
     band_report: Optional[BandReport] = None
     existence_score: float = 0.0
     n_dict_words: int = 0
+    soft_uid: Optional[int] = None
+    soft_gap: float = -1.0
 
 
 # ----------------------------------------------------------------------
@@ -262,14 +266,26 @@ class Watermarker:
         session_salt: Optional[bytes] = None,
         seal: Optional[BindingSeal] = None,
         language: Optional[str] = None,
+        soft_match: bool = False,
+        match_margin: float = 2.0,
     ) -> TraceResult:
-        """溯源：存在性检测 + UID 解码 + 注册库最近邻匹配 + 篡改判定。
+        """溯源：存在性检测 + UID 解码 + 注册库匹配 + 篡改判定。
 
         Args:
             text: 嫌疑文本
             session_salt: 会话盐（有则做信道A验证 + 用原盐解码）
             seal: 信道 A 签名（有则验证篡改）
             language: 语言覆盖
+            soft_match: 启用软判决注册库匹配（v0.7 鲁棒性增强）。
+                True 时用逐带 z 打点积分对注册库候选直接打分（min_n=1，
+                弱证据带参与），替代"解码 UID + 汉明最近邻"路径。
+                需注册库非空；否则回退硬判决路径。软匹配结果只在水印
+                存在性判定通过（watermarked）后采纳——soft_match 是候选
+                区分器，不回答"是否嵌了水印"（null 文本也可能与某候选
+                方向对齐）。
+            match_margin: 软判决置信阈值。最优与次优得分差 < margin
+                时视为不可靠（uid=None）。在已嵌入（含受损）文本上
+                实测 margin=2.0 可把错误匹配全部转为 abstain。
 
         Returns:
             TraceResult
@@ -290,15 +306,33 @@ class Watermarker:
         uid = report.uid if watermarked else None
         user = None
         hamming_dist = -1
-        if watermarked and uid is not None and self._registry is not None:
-            match = self._registry.nearest_match(uid, max_hamming=self._thresholds.max_hamming)
-            if match is not None:
-                _, user, hamming_dist = match
-            else:
-                hamming_dist = min(
-                    (bin(uid ^ u).count("1") for u in self._registry.list_all()),
-                    default=-1,
+        soft_uid: Optional[int] = None
+        soft_gap = -1.0
+
+        if self._registry is not None and len(self._registry) > 0:
+            if soft_match:
+                # 软判决路径：直接对注册库候选打分（min_n=1，利用弱证据带）。
+                # 注意：soft_match 是"候选区分器"，null 文本也可能与某候选
+                # 方向对齐（z 随机游走）——存在性必须由 watermarked 门控。
+                soft_uid, best_score, soft_gap = codec.soft_match(
+                    text,
+                    list(self._registry.list_all()),
+                    min_n=1,
+                    margin=match_margin,
                 )
+                if watermarked and soft_uid is not None:
+                    uid = soft_uid
+                    user = self._registry.lookup(uid)
+            elif watermarked and uid is not None:
+                match = self._registry.nearest_match(
+                    uid, max_hamming=self._thresholds.max_hamming)
+                if match is not None:
+                    _, user, hamming_dist = match
+                else:
+                    hamming_dist = min(
+                        (bin(uid ^ u).count("1") for u in self._registry.list_all()),
+                        default=-1,
+                    )
 
         # 置信度
         confidence = min(1.0, report.existence_score / self._thresholds.confidence_scale)
@@ -323,6 +357,8 @@ class Watermarker:
             band_report=report,
             existence_score=report.existence_score,
             n_dict_words=report.n_dict_words,
+            soft_uid=soft_uid,
+            soft_gap=soft_gap,
         )
 
     # ------------------------------------------------------------------

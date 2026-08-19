@@ -1,24 +1,29 @@
 #!/usr/bin/env python3
-"""exp_paws_attack.py: PAWS-X zh 真实改写对接入攻击模拟（P2 销项）。
+"""exp_paws_attack.py: 真实改写对（PAWS-X zh / PKU-Paraphrase-Bank）攻击谱。
 
-补全攻击谱的"温和改写"端。PAWS-X 正样本对（sentence1 → sentence2，
-人工构造的高重叠改写，train 21829 对）用于标定词典词级转移矩阵：
-  keep 83.6% / 组内同义换 2.38% / 删除·组外 14.1%（水印词典视角）
-然后把转移概率作用在带水印文本上，模拟"攻击者对 marked 做 PAWS 级改写"。
+补全攻击谱的两端。两个中文真实改写对数据集标定词典词级转移矩阵，
+把转移概率作用在带水印文本上，模拟"攻击者对 marked 做 X 级改写"：
+
+  - PAWS-X zh（train 21829 正样本）：人工构造的高词汇重叠改写（温和端）
+      keep 83.7% / 组内同义换 2.14% / 删除·组外 14.1%
+  - PKU-Paraphrase-Bank（509832 对）：文学翻译的自由改写（重度端）
+      keep 46.6% / 组内同义换 2.84% / 删除·组外 50.5%
 
 方法论注意（曾踩坑）：不能直接把 sentence2 拼成文档去检测——
 sentence2 是未嵌入的独立自然文本，检测它等于检测 null 文档，
 测得汉明≈null 噪声是"信号从不存在"的必然，不构成攻击结果。
-PAWS 的价值在标定"词典词命运"的转移参数，而非提供已嵌入的改写文本。
+真实改写对的价值在标定"词典词命运"的转移参数，而非提供已嵌入的改写文本。
 
 对照攻击谱（30 篇拼接文档，每篇 20 句 ≈ 900 字，词典词均值 51）：
   嵌入往返基线  汉明 0.00  ≤1=100%
   PAWS 温和改写  汉明 0.70  ≤1=90%   Σ|z| 24.6→18.0
+  PKU  重度改写  汉明 ~5    （≈ null 噪声，信号丢失）
   同组 30% 狠攻  汉明 1.20  ≤1=67%   Σ|z| →15.5
   同组 50% 狠攻  汉明 3.40  ≤1=3%    Σ|z| →11.2
 
-结论：温和改写（PAWS 级）下水印存活良好，破坏力低于同组 30% 替换；
-攻击谱两端（温和/狠攻）的破坏力单调，注册库 Hamming≤3 均能覆盖 PAWS 端。
+结论：温和改写（PAWS 级）水印存活良好；重度改写（PKU 级，过半词典词被删）
+信号几乎全丢，等同 null——这是词典级水印的物理边界，算法增强的方向是
+扩大词典覆盖 + 冗余编码（见 docs/design.md 鲁棒性增强章节）。
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ SALT = b"real-corpus-2026"
 N_SENT = 20  # 每篇拼接句子对数
 N_DOCS = 60  # 30 test + 30 null
 PAWS_GLOB = "corpus/paraphrase/train-00000-of-00001-*.parquet"
+PKU_TSV = "corpus/paraphrase/pku_paraphrase.tsv"
 
 
 def load_paws_positive() -> list[tuple[str, str]]:
@@ -48,6 +54,18 @@ def load_paws_positive() -> list[tuple[str, str]]:
     df = pd.read_parquet(glob.glob(PAWS_GLOB)[0])
     pos = df[df["score"] == 1][["sentence1", "sentence2"]].reset_index(drop=True)
     return [(s1, s2) for s1, s2 in pos.itertuples(index=False)]
+
+
+def load_pku_pairs(limit: int = 6000) -> list[tuple[str, str]]:
+    """加载 PKU-Paraphrase-Bank 改写对 (sentence1, sentence2)。"""
+    out: list[tuple[str, str]] = []
+    with open(PKU_TSV, encoding="utf-8") as f:
+        for line in f:
+            s1, s2 = line.rstrip("\n").split("\t")
+            out.append((s1, s2))
+            if len(out) >= limit:
+                break
+    return out
 
 
 def build_codec(base: GreenlistCodec, docs: list[str], raw_dict: dict) -> GreenlistCodec:
@@ -89,9 +107,9 @@ def transfer_matrix(codec: GreenlistCodec, pairs: list[tuple[str, str]],
     return cnt
 
 
-def paws_style_attack(codec: GreenlistCodec, text: str, seed: int,
-                      p_del: float, p_grp: float) -> str:
-    """PAWS 参数化温和攻击：词典词按实测转移概率处理。"""
+def paraphrase_style_attack(codec: GreenlistCodec, text: str, seed: int,
+                            p_del: float, p_grp: float) -> str:
+    """参数化温和攻击：词典词按实测转移概率处理（真实改写对标定）。"""
     r = random.Random(seed)
     out = []
     for raw, norm in codec._tokenizer(text):
@@ -112,15 +130,16 @@ def paws_style_attack(codec: GreenlistCodec, text: str, seed: int,
 
 
 def main() -> None:
-    pairs = load_paws_positive()
+    paws = load_paws_positive()
+    pku = load_pku_pairs(20000)
     base = GreenlistCodec(KEY, SALT, language_tag=b"zh")
     raw = build_cilin_dict("corpus/dict/cilin_extended.txt")
 
-    # 保留词典词 ≥2 的句子，随机打乱后拼接成文档
+    # 保留词典词 ≥2 的句子，随机打乱后拼接成文档（用 PAWS 句子做文档基准）
     def n_dict(s: str) -> int:
         return sum(1 for _, n in base._tokenizer(s) if n and n in base._w2group)
 
-    kept = [p for p in pairs if n_dict(p[0]) >= 2]
+    kept = [p for p in paws if n_dict(p[0]) >= 2]
     rng = random.Random(7)
     rng.shuffle(kept)
 
@@ -134,16 +153,19 @@ def main() -> None:
     print(f"文档: {len(test_docs)} test + {len(null_docs)} null，"
           f"句长均值 {sum(len(d) for d in test_docs) / len(test_docs):.0f} 字")
 
-    # PAWS 转移矩阵标定（水印词典视角）
-    tm = transfer_matrix(codec, pairs)
-    p_del, p_grp = tm["del_p"], tm["grp_sub_p"]
-    print(f"\nPAWS 词典词级转移矩阵（{tm['pairs']} 对，{tm['n1']} 词）:")
-    print(f"  keep={tm['keep_p']*100:.1f}%  组内同义换={tm['grp_sub_p']*100:.2f}%  "
-          f"删除/组外={tm['del_p']*100:.1f}%  sentence2 词典词净增={tm['new']}")
+    # 两个数据集的词典词级转移矩阵（水印词典视角）
+    tm_paws = transfer_matrix(codec, paws)
+    tm_pku = transfer_matrix(codec, pku, limit=20000)
+    print(f"\n[PAWS 转移矩阵] {tm_paws['pairs']} 对 / {tm_paws['n1']} 词典词:")
+    print(f"  keep={tm_paws['keep_p']*100:.1f}%  组内同义换={tm_paws['grp_sub_p']*100:.2f}%  "
+          f"删除/组外={tm_paws['del_p']*100:.1f}%  sentence2 词典词净增={tm_paws['new']}")
+    print(f"[PKU  转移矩阵] {tm_pku['pairs']} 对 / {tm_pku['n1']} 词典词:")
+    print(f"  keep={tm_pku['keep_p']*100:.1f}%  组内同义换={tm_pku['grp_sub_p']*100:.2f}%  "
+          f"删除/组外={tm_pku['del_p']*100:.1f}%  sentence2 词典词净增={tm_pku['new']}")
 
-    # 攻击谱
-    rt, paws, s30, s50 = [], [], [], []
-    sumz_rt, sumz_paws, sumz_s30, sumz_s50 = [], [], [], []
+    # 攻击谱：rt / paws / pku / s30 / s50
+    rt, paws_b, pku_b, s30, s50 = [], [], [], [], []
+    sumz_rt, sumz_paws, sumz_pku, sumz_s30, sumz_s50 = [], [], [], [], []
     dict_counts = []
     for i, doc in enumerate(test_docs):
         uid = (0x1000 + i * 0x0111) & 0xFFFF
@@ -152,13 +174,19 @@ def main() -> None:
         dict_counts.append(rep.n_dict_words)
         sumz_rt.append(rep.existence_score)
         rt.append(codec.masked_hamming(marked, uid))
-        for frac, bucket, zl in (
-            (None, paws, sumz_paws), (0.30, s30, sumz_s30), (0.50, s50, sumz_s50),
+        for tag, rw, bucket, zl in (
+            ("paws", paraphrase_style_attack(codec, marked, 200 + i,
+                                             tm_paws["del_p"], tm_paws["grp_sub_p"]),
+             paws_b, sumz_paws),
+            ("pku", paraphrase_style_attack(codec, marked, 300 + i,
+                                            tm_pku["del_p"], tm_pku["grp_sub_p"]),
+             pku_b, sumz_pku),
         ):
-            if frac is None:
-                rw = paws_style_attack(codec, marked, 200 + i, p_del, p_grp)
-            else:
-                rw, _ = synonym_attack(codec, marked, frac, 100 + i)
+            d, a = codec.masked_hamming(rw, uid)
+            bucket.append((d, a))
+            zl.append(codec.detect(rw).existence_score)
+        for frac, bucket, zl in ((0.30, s30, sumz_s30), (0.50, s50, sumz_s50)):
+            rw, _ = synonym_attack(codec, marked, frac, 100 + i)
             d, a = codec.masked_hamming(rw, uid)
             bucket.append((d, a))
             zl.append(codec.detect(rw).existence_score)
@@ -171,23 +199,29 @@ def main() -> None:
 
     print(f"\n词典词/文档: 均值={sum(dict_counts) / len(dict_counts):.0f}")
     report("嵌入往返(基线)", rt)
-    report("PAWS温和改写(实测参数)", paws)
+    report("PAWS温和改写(实测参数)", paws_b)
+    report("PKU重度改写(实测参数)", pku_b)
     report("同组30%狠攻", s30)
     report("同组50%狠攻", s50)
     print(f"[Σ|z|] 嵌入后={sum(sumz_rt) / len(sumz_rt):.1f}  "
-          f"PAWS改写={sum(sumz_paws) / len(sumz_paws):.1f}  "
+          f"PAWS={sum(sumz_paws) / len(sumz_paws):.1f}  "
+          f"PKU={sum(sumz_pku) / len(sumz_pku):.1f}  "
           f"同组30%={sum(sumz_s30) / len(sumz_s30):.1f}  "
           f"同组50%={sum(sumz_s50) / len(sumz_s50):.1f}")
 
     out = {
         "n_groups": len(codec._groups),
-        "transfer": tm,
         "dict_words_per_doc": round(sum(dict_counts) / len(dict_counts), 1),
+        "transfer_paws": tm_paws,
+        "transfer_pku": tm_pku,
         "rt_ham_mean": round(sum(x for x, _ in rt) / len(rt), 2),
-        "paws_ham_mean": round(sum(x for x, _ in paws) / len(paws), 2),
-        "paws_le1": f"{sum(1 for x, _ in paws if x <= 1) / len(paws) * 100:.0f}%",
-        "paws_le2": f"{sum(1 for x, _ in paws if x <= 2) / len(paws) * 100:.0f}%",
+        "paws_ham_mean": round(sum(x for x, _ in paws_b) / len(paws_b), 2),
+        "paws_le1": f"{sum(1 for x, _ in paws_b if x <= 1) / len(paws_b) * 100:.0f}%",
+        "paws_le2": f"{sum(1 for x, _ in paws_b if x <= 2) / len(paws_b) * 100:.0f}%",
         "paws_sumz": round(sum(sumz_paws) / len(sumz_paws), 1),
+        "pku_ham_mean": round(sum(x for x, _ in pku_b) / len(pku_b), 2),
+        "pku_le1": f"{sum(1 for x, _ in pku_b if x <= 1) / len(pku_b) * 100:.0f}%",
+        "pku_sumz": round(sum(sumz_pku) / len(sumz_pku), 1),
         "s30_ham_mean": round(sum(x for x, _ in s30) / len(s30), 2),
         "s30_le1": f"{sum(1 for x, _ in s30 if x <= 1) / len(s30) * 100:.0f}%",
         "s30_sumz": round(sum(sumz_s30) / len(sumz_s30), 1),

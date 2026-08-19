@@ -89,6 +89,15 @@ from aawm.plugins.adapters.litellm_proxy import setup_hooks
 setup_hooks(watermarker)  # 注册全局 hook，所有 LLM 调用自动嵌水印
 ```
 
+OpenAI SDK 适配器（直接包装客户端，同步/异步/流式都支持）：
+
+```python
+from aawm.plugins.adapters.openai_v1 import wrap_openai_client
+client = wrap_openai_client(openai.OpenAI(), watermarker)
+resp = client.chat.completions.create(..., user_id="user-alice")
+# resp.choices[0].message.content 已自动嵌水印
+```
+
 > 详见 [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md)
 
 ### v0.4 核心算法 API（底层）

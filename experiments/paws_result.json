@@ -1,6 +1,7 @@
 {
   "n_groups": 222,
-  "transfer": {
+  "dict_words_per_doc": 51.5,
+  "transfer_paws": {
     "keep": 6810,
     "grp_sub": 174,
     "del": 1150,
@@ -12,12 +13,26 @@
     "grp_sub_p": 0.0214,
     "del_p": 0.1414
   },
-  "dict_words_per_doc": 51.5,
+  "transfer_pku": {
+    "keep": 9286,
+    "grp_sub": 566,
+    "del": 10057,
+    "new": -3459,
+    "n1": 19909,
+    "n2": 16450,
+    "pairs": 10417,
+    "keep_p": 0.4664,
+    "grp_sub_p": 0.0284,
+    "del_p": 0.5051
+  },
   "rt_ham_mean": 0.0,
   "paws_ham_mean": 0.7,
   "paws_le1": "90%",
   "paws_le2": "93%",
   "paws_sumz": 18.0,
+  "pku_ham_mean": 5.97,
+  "pku_le1": "0%",
+  "pku_sumz": 10.3,
   "s30_ham_mean": 1.2,
   "s30_le1": "67%",
   "s30_sumz": 15.5,

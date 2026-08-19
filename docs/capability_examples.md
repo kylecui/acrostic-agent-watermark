@@ -252,8 +252,77 @@ down → downwards  Why → Wherefore     Monday → Mon
 ✅ 8 位词林升级完成：571 → 6612 组，同域词典词命中 4 倍、Σ|z| 2.6 倍、
    固定攻击强度下鲁棒性提升一个数量级；
 ❌ 跨域（词典时代/文体 ≠ 文本时代/文体）仍不可部署；
-⚠️ 8 位词林仍有个别语义粗糙组（如"自由"被并入"释放"义组）；
-   接入 P2 真实改写对（PAWS）补全攻击谱是下一个待办。
+⚠️ 8 位词林仍有个别语义粗糙组（如"自由"被并入"释放"义组）。
+
+### 二·五·B、PKU 重度改写攻击谱（2026-08-19）
+
+`corpus/paraphrase/pku_paraphrase.tsv`：PKU-Paraphrase-Bank（509832 对，
+文学翻译的自由改写）标定词典词级转移矩阵（20000 对采样）：
+
+| 词典词命运 | 占比 | 对水印影响 |
+|---|---|---|
+| 字面保留 | **46.6%** | 信号不动 |
+| 组内同义替换 | 2.84% | 颜色随词，~50% 翻转 |
+| 删除 / 组外改写 | **50.5%** | 信号全丢 |
+
+攻击谱扩展（PAWS 温和端 + PKU 重度端并置）：
+
+| 攻击 | 汉明均值 | ≤1 | ≤2 | Σ\|z\| |
+|---|---|---|---|---|
+| 嵌入往返（基线）| 0.00 | 100% | 100% | 24.6 |
+| PAWS 温和改写 | 0.70 | 90% | 93% | 18.0 |
+| 同组 30% 狠攻 | 1.20 | 67% | 93% | 15.5 |
+| 同组 50% 狠攻 | 3.40 | 3% | 27% | 11.2 |
+| **PKU 重度改写** | **5.97** | **0%** | **0%** | **10.3** |
+
+**结论**：PKU 重度改写（过半词典词被删）汉明 5.97 ≈ null 噪声
+（16-bit 随机期望 8），Σ|z|=10.3 与 null 无区分——信号全部丢失，
+这是**词典级水印的物理边界**。攻击谱单调完整：
+PAWS 温和（0.70）< 同组30%（1.20）< 同组50%（3.40）< PKU 重度（5.97）。
+算法增强的方向是扩大词典覆盖 + 冗余编码（§13.11 软判决匹配已在
+不扩大词典的前提下榨出 27/30）。
+
+### 二·五·C、软判决注册库匹配（v0.7 鲁棒性增强，2026-08-19）
+
+`experiments/exp_soft_match.py`：针对硬判决两条缺陷的增强实验。
+
+**缺陷诊断**（硬判决 masked_hamming）：
+1. 只比较解码 UID 与候选的**符号**，逐带 z 的幅度信息被丢弃
+2. 零覆盖带（n<2）被掩码后，候选在 active 带不可区分——实测
+   嵌入往返基线 4/30 失败源于此（如 doc0 真 uid=0x1000 解码=0000）
+
+**两个增强**：
+- **min_n=1 弱证据带参与**：单词带的 z 符号噪声攻击下实测正确率
+  79%~100%（rt 100%、paws 79%、s30 80%），净贡献为正
+- **soft-dot 打点积分**：s(c) = Σ_b z_b·(2·bit_b(c) − 1) 对候选
+  argmax，利用幅度信息而非只比符号
+
+**结果矩阵**（30 篇拼接文档，字典词均值 51，候选池 = 低 UID + 真 UID）：
+
+| 攻击 | A0 硬n≥2 | A1 硬n≥1 | B0 soft_n2 | B1 soft_n1 |
+|---|---|---|---|---|
+| 嵌入往返 | 26/30 | 29/30 | 26/30 | **29/30** |
+| PAWS 温和 | 22/30 | 23/30 | 22/30 | **25/30** |
+| 同组 30% | 20/30 | 23/30 | 24/30 | **27/30** |
+| 同组 50% | 7/30 | 6/30 | 6/30 | 6/30 |
+| PKU 重度 | 1/30 | 1/30 | 1/30 | 1/30 |
+
+**结论**：
+- B1（soft_dot + min_n=1）最优：s30 攻击下 20→27/30，rt 26→29/30
+- s50/pku 任何策略都 ≈ 随机——超过物理边界（见 §二·五·B）
+- **margin 置信阈值**：最优与次优得分差 < margin 则 abstain。
+  已嵌入（含受损）文本上 margin=2.0 把错误匹配全部转 abstain，
+  precision→100%，代价是部分召回转"低置信待复核"
+- **存在性门控（方法论）**：soft_match 是候选区分器，不回答"是否
+  嵌了水印"——null 文本 z 随机游走也可能与某候选方向对齐
+  （实测 40/40 误匹配）。区分未嵌靠 existence_score
+  （null 40.2 vs marked 78.2，无重叠），trace 先判存在性再采纳
+  软匹配结果
+
+**正式 API**：`GreenlistCodec.soft_match(text, candidates, *, min_n=1,
+margin=0.0)`（返回 best_uid/best_score/gap）；`Watermarker.trace(
+soft_match=True, match_margin=2.0)` 一键启用。已写入
+`tests/test_soft_match.py`（14 项）。
 
 ### F7 ❌ 脱离语义单元的检测层（字节/字符/bigram）已被判死
 
@@ -313,14 +382,17 @@ BPE 表需网络下载（沙箱失败）+ 模型生态绑定违背零依赖原�
 
 | # | 语料 | 语言 | 具体下载 | 放置文件名 | 状态 |
 |---|---|---|---|---|---|
-| 6 | PAWS(-X) | EN/ZH | github.com/google-research-datasets/paws（含 PAWS-X 中文子集）| `corpus/paraphrase/*.parquet` | ✅ 已接入（2026-08-19，见 §二·五） |
-| 7 | CSTS / NLPCC 改写对 | ZH | 搜"CSTS 中文句子相似度数据集" | `corpus/paraphrase/csts.tsv` | ⬜ 可选 |
+| 6 | PAWS(-X) | EN/ZH | github.com/google-research-datasets/paws（含 PAWS-X 中文子集）| `corpus/paraphrase/*.parquet` | ✅ 已接入（2026-08-19，见 §二·五·A） |
+| 7 | PKU-Paraphrase-Bank | ZH | github.com/ylhsieh/PKU-Paraphrase-Bank（509832 对）| `corpus/paraphrase/pku_paraphrase.tsv` | ✅ 已接入（2026-08-19，见 §二·五·B） |
+| 8 | CSTS / NLPCC 改写对 | ZH | 搜"CSTS 中文句子相似度数据集" | `corpus/paraphrase/csts.tsv` | ⬜ 可选（PKU 已覆盖重改写端） |
 
 用途：目前攻击模拟 = 同义词组内随机换（对水印最狠的改写）；
-PAWS 是人工构造的高重叠改写，可测"温和改写"下的存活率，补全攻击谱。
-**已落地**：`experiments/exp_paws_attack.py`（PAWS-X zh train 正样本对 21829
-对，标定词典词级转移矩阵后生成参数化温和攻击，见 §二·五攻击谱）。
-#7 为可选增强（中文领域更广的改写风格），暂不阻塞。
+PAWS 是人工构造的高重叠改写，可测"温和改写"下的存活率；
+PKU-Paraphrase-Bank 是文学翻译的自由改写，覆盖"重度改写"端。
+**已落地**：`experiments/exp_paws_attack.py`（PAWS 标定转移矩阵 →
+参数化温和攻击 + PKU 标定 → 参数化重度攻击，攻击谱五路成型，
+见 §二·五·A/B）。
+#8 为可选增强（中文领域更广的改写风格），PKU 已覆盖重改写端，暂不阻塞。
 
 **最少集**：仅需 #1 + #2 + #5 即可复现全部能力结论（已全部到位）。
 
@@ -331,8 +403,9 @@ PAWS 是人工构造的高重叠改写，可测"温和改写"下的存活率，�
 ```bash
 python3 experiments/exp_capability_demo.py   # 本文全部 ✅/❌ 数据（固定种子）
 python3 experiments/exp_real_corpus.py       # 二·五 真实语料实测（需 corpus/en·zh·dict）
-python3 experiments/exp_paws_attack.py       # 二·五·A PAWS 温和改写攻击谱（需 corpus/paraphrase）
+python3 experiments/exp_paws_attack.py       # 二·五·A/B PAWS+PKU 攻击谱（需 corpus/paraphrase）
+python3 experiments/exp_soft_match.py        # 二·五·C 软判决匹配增强
 python3 experiments/exp_attack_surface.py    # §13.9 攻击数据
 python3 examples/04_dual_channel.py          # 双信道四场景联合判决
-python3 -m pytest tests/ -q                  # 104+ 项测试
+python3 -m pytest tests/ -q                  # 226+ 项测试
 ```

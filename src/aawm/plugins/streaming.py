@@ -18,6 +18,7 @@
 策略：
     - 累积 delta 到缓冲区
     - 遇到句末标点（.!?。！？；）触发整句嵌入
+    - 缓冲区超限 / 超时强制嵌入（防无限缓冲）
     - 嵌入失败 fail-open 释放原文
     - flush() 处理剩余缓冲（即使无句末标点也强制嵌入）
 """
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import Optional
 
 from .context import Context
@@ -36,30 +38,30 @@ logger = logging.getLogger("aawm.plugin.streaming")
 # 句末标点（英文 .!? + 中文 。！？；）
 _SENT_END_RE = re.compile(r"[.!?。！？；\n]")
 
-# 最小可嵌入长度（短于这个值不嵌入，避免碎片）
-_MIN_EMBED_LEN = 50
-
 
 class StreamingWatermarker:
     """句子级流式水印器。
 
-    缓冲到句末标点，整句嵌入后释放。
+    缓冲到句末标点，整句嵌入后释放。带超限/超时保护，防无限缓冲。
     """
 
     def __init__(
         self,
         middleware: WatermarkMiddleware,
         *,
+        min_embed_len: int = 20,
+        max_buffer_len: int = 4096,
         flush_timeout_ms: int = 2000,
     ) -> None:
         self._mw = middleware
-        self._flush_timeout_ms = flush_timeout_ms
+        self._min_embed_len = min_embed_len
+        self._max_buffer_len = max_buffer_len
+        self._flush_timeout_s = flush_timeout_ms / 1000.0
         self._buffer = ""
         self._ctx: Optional[Context] = None
         self._total_emitted = 0
         self._total_buffered = 0
-        # 单次嵌入的最小文本量：低于此值不触发嵌入
-        # 流式场景词数可能不足以往返，但我们仍尝试
+        self._last_emit = time.monotonic()
 
     def feed(
         self,
@@ -83,25 +85,29 @@ class StreamingWatermarker:
         self._buffer += delta
         self._total_buffered += len(delta)
 
-        # 尝试切出完整句并嵌入
-        output = []
-        while True:
-            # 找最后一个句末标点（保留标点在句内）
-            m = None
-            for m in _SENT_END_RE.finditer(self._buffer):
-                pass  # 找到最后一个
-            if m is None:
-                break
-            # 切到标点之后
-            cut = m.end()
-            sentence = self._buffer[:cut]
-            self._buffer = self._buffer[cut:]
+        out: list[str] = []
 
-            # 嵌入这一句
-            marked = self._embed_chunk(sentence)
-            output.append(marked)
+        # 超时保护：距上次输出超过阈值 → 强制嵌入当前缓冲
+        now = time.monotonic()
+        if self._buffer and (now - self._last_emit) > self._flush_timeout_s:
+            out.append(self._emit_buffer())
 
-        result = "".join(output)
+        # 超限保护：缓冲超过上限 → 强制嵌入
+        if len(self._buffer) >= self._max_buffer_len:
+            out.append(self._emit_buffer())
+
+        # 一次性扫描定位所有句末标点（O(n)，避免逐句重扫 buffer 的 O(n²)）
+        last = 0
+        for m in _SENT_END_RE.finditer(self._buffer):
+            sentence = self._buffer[last:m.end()]
+            last = m.end()
+            out.append(self._embed_chunk(sentence))
+        if last:
+            self._buffer = self._buffer[last:]
+
+        result = "".join(out)
+        if result:
+            self._last_emit = time.monotonic()
         self._total_emitted += len(result)
         return result
 
@@ -140,15 +146,21 @@ class StreamingWatermarker:
     # 内部
     # ------------------------------------------------------------------
 
+    def _emit_buffer(self) -> str:
+        """强制嵌入当前整个缓冲区并清空。"""
+        if not self._buffer:
+            return ""
+        text = self._buffer
+        self._buffer = ""
+        return self._embed_chunk(text)
+
     def _embed_chunk(self, text: str) -> str:
         """嵌入一个文本块。Fail-open：失败返回原文。"""
         if not text or not text.strip():
             return text
 
-        # 短文本不嵌入——累积到足够长度再处理
-        # 但流式场景下，单句可能就是全部内容，所以我们对短句也尝试
-        # 只在极短时跳过
-        if len(text.strip()) < 20:
+        # 太短不嵌入——原样释放（避免碎片嵌入破坏锚点）
+        if len(text.strip()) < self._min_embed_len:
             return text
 
         marked, _ = self._mw.transform(text, self._ctx)
