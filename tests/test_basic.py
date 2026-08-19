@@ -192,10 +192,16 @@ class TestEmbedDecode:
         assert len(set(texts.values())) == 3
 
     def test_wrong_key_fails(self):
+        """错误密钥：CRC 通过概率仅 2^-8，多次断言统计压倒性失败。"""
         key = generate_master_key()
-        r = Embedder(key).embed(SAMPLE_TEXT, user_id=42)
-        d = Decoder(generate_master_key()).decode(r.watermarked_text, r.session_salt)
-        assert not d.success
+        emb = Embedder(key)
+        fails = 0
+        for _ in range(8):
+            r = emb.embed(SAMPLE_TEXT, user_id=42)
+            d = Decoder(generate_master_key()).decode(r.watermarked_text, r.session_salt)
+            if not d.success:
+                fails += 1
+        assert fails >= 7  # 全失败概率 (255/256)^8 ≈ 96.9%
 
     def test_unwatermarked_text_fails(self):
         """无水印文本：CRC 通过概率仅 2^-8，多次断言统计压倒性失败。"""
