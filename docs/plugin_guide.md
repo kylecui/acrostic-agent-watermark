@@ -256,9 +256,30 @@ trace = watermarker.trace(
     session_salt=stored_salt,
     soft_match=True,      # 启用软判决匹配
     match_margin=2.0,     # 最优-次优得分差下限（低于则 abstain，uid=None）
+    # v0.8：match_margin_ratio=0.5 启用自适应置信阈值（见下）
 )
 print(trace.soft_gap)     # 最优-次优得分差；gap<margin 说明置信不足需复核
 ```
+
+**自适应置信阈值（v0.8）**：长文本（词典词上千）下 gap 的统计尺度
+随 √n_dict 增长，固定 `match_margin=2.0` 会偏松——重度改写后错误
+匹配的 gap 可能仍超 2.0（"自信地错"）。传 `match_margin_ratio` 可让
+生效阈值变为 `max(match_margin, ratio·√n_dict)`，短文本由绝对项主导、
+长文本由比例项主导：
+
+```python
+trace = watermarker.trace(
+    suspect_text,
+    session_salt=stored_salt,
+    soft_match=True,
+    match_margin=2.0,
+    match_margin_ratio=0.5,   # 长文本/重度攻击场景推荐
+)
+```
+
+实测错误匹配的 gap/√n_dict 上界跨语料稳定 ≈0.22，正确匹配均值
+0.5~0.7；ratio 是"宁可 abstain 也不错"的权衡旋钮——ratio 越高
+错误越少但 abstain 越多（0.5 时 s50/pku 错误清零，s30 召回 19→8）。
 
 注意：软判决只提升"有损文本的归属能力"，不改变存在性判定；
 `trace.watermarked` 仍由 Σ|z| 阈值决定（未嵌水印文本不会被误归因）。

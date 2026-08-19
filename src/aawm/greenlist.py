@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import math
 import random
 import re
 from dataclasses import dataclass, field
@@ -382,6 +383,7 @@ class GreenlistCodec:
         *,
         min_n: int = 1,
         margin: float = 0.0,
+        margin_ratio: Optional[float] = None,
     ) -> Tuple[Optional[int], float, float]:
         """软判决注册库匹配（鲁棒性增强）。
 
@@ -397,13 +399,25 @@ class GreenlistCodec:
             text: 嫌疑文本
             candidates: 候选 UID 列表（如注册库全部 UID）
             min_n: 参与检测的最小带内词数（默认 1，利用弱证据带）
-            margin: 置信阈值。最优与次优得分差 < margin 时 abstain
-                （返回 best_uid=None）。实测 margin=2.0 可把错误匹配
-                全部转为 abstain（precision→100%），代价是略降召回。
+            margin: 绝对置信阈值。最优与次优得分差 < margin 时 abstain
+                （返回 best_uid=None）。实测 margin=2.0 可把温和攻击下的
+                错误匹配全部转为 abstain（precision→100%）。
+            margin_ratio: 自适应置信系数（v0.8）。gap 的统计尺度随
+                √n_dict_words 增长（exp_margin_scale 实测正确匹配
+                gap ≈ k·√n_dict，k 随攻击强度衰减），固定绝对 margin
+                对长文本偏松（50% 改写下错误 gap 仍超 2.0，"自信地错"）。
+                给出时生效阈值为 max(margin, margin_ratio·√n_dict)——
+                短文本由绝对项主导、长文本由比例项主导。实测错误匹配的
+                gap/√n_dict 上界跨语料稳定 ≈0.22，正确匹配均值 0.5~0.7，
+                但 50% 攻击下两者分布重叠，不存在完美阈值：
+                margin_ratio 是"宁可 abstain 也不错"的权衡旋钮，
+                ratio 越高 abstain 越多、错误越少（exp_margin_ratio 实测
+                ratio=0.5 时 s50/pku 错误清零，代价是 s30 召回 19→8）。
+                None 时保持纯绝对 margin 语义（默认兼容）。
 
         Returns:
             (best_uid, best_score, gap)：
-                best_uid: 得分最高的候选；gap < margin 时为 None（不可靠）
+                best_uid: 得分最高的候选；gap < 生效 margin 时为 None（不可靠）
                 best_score: 最优候选的 soft 得分
                 gap: 最优与次优候选的得分差
         """
@@ -411,6 +425,8 @@ class GreenlistCodec:
         if not cands:
             return None, 0.0, 0.0
         rep = self.detect(text, min_n=min_n)
+        if margin_ratio is not None and margin_ratio > 0:
+            margin = max(margin, margin_ratio * math.sqrt(rep.n_dict_words))
         z_by_band = {st.band: st.z for st in rep.bands if st.has_signal}
 
         def _score(c: int) -> float:

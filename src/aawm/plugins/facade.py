@@ -268,6 +268,7 @@ class Watermarker:
         language: Optional[str] = None,
         soft_match: bool = False,
         match_margin: float = 2.0,
+        match_margin_ratio: Optional[float] = None,
     ) -> TraceResult:
         """溯源：存在性检测 + UID 解码 + 注册库匹配 + 篡改判定。
 
@@ -283,9 +284,17 @@ class Watermarker:
                 存在性判定通过（watermarked）后采纳——soft_match 是候选
                 区分器，不回答"是否嵌了水印"（null 文本也可能与某候选
                 方向对齐）。
-            match_margin: 软判决置信阈值。最优与次优得分差 < margin
+            match_margin: 软判决绝对置信阈值。最优与次优得分差 < margin
                 时视为不可靠（uid=None）。在已嵌入（含受损）文本上
-                实测 margin=2.0 可把错误匹配全部转为 abstain。
+                实测 margin=2.0 可把温和攻击下的错误匹配全部转为 abstain。
+            match_margin_ratio: 软判决自适应置信系数（v0.8）。gap 尺度
+                随 √n_dict 增长，固定绝对 margin 对长文本偏松（50% 改写
+                下错误 gap 仍超 2.0，"自信地错"）。给出时生效阈值
+                max(match_margin, ratio·√n_dict)——短文本由绝对项主导、
+                长文本由比例项主导。实测错误匹配 gap/√n_dict 上界跨语料
+                稳定 ≈0.22，正确匹配均值 0.5~0.7，但重度攻击下分布重叠：
+                ratio 是"宁可 abstain 也不错"的权衡旋钮（ratio=0.5 时
+                s50/pku 错误清零，s30 召回 19→8）。None 时纯绝对阈值。
 
         Returns:
             TraceResult
@@ -319,6 +328,7 @@ class Watermarker:
                     list(self._registry.list_all()),
                     min_n=1,
                     margin=match_margin,
+                    margin_ratio=match_margin_ratio,
                 )
                 if watermarked and soft_uid is not None:
                     uid = soft_uid

@@ -56,6 +56,7 @@ result = wm.trace(
     language: str | None = None,
     soft_match: bool = False,            # v0.7 软判决注册库匹配（见下）
     match_margin: float = 2.0,           # 软判决置信阈值（最优-次优得分差下限）
+    match_margin_ratio: float | None = None,  # v0.8 自适应置信系数（见下）
 ) -> TraceResult
 ```
 
@@ -66,6 +67,13 @@ result = wm.trace(
 null 文本也可能与某候选方向对齐）。实测：30% 同组改写攻击下
 匹配率 20→27/30，PAWS 温和改写 22→25/30；`match_margin=2.0`
 可把错误匹配全部转为 abstain。
+
+**自适应置信阈值（v0.8）**：`match_margin_ratio` 提供按证据量放大的
+置信余量，生效阈值 `max(match_margin, ratio·√n_dict)`——短文本由
+绝对项主导、长文本由比例项主导。解决固定绝对 margin 对长文本偏松
+（50% 改写下错误 gap 仍超 2.0，"自信地错"）。实测错误匹配的
+gap/√n_dict 上界跨语料稳定 ≈0.22；ratio 是"宁可 abstain 也不错"
+的权衡旋钮，按部署语料调（详见 design §13.11 / capability §二·五·D）。
 
 ### 其他方法
 

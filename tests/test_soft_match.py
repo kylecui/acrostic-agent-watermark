@@ -205,3 +205,82 @@ class TestTraceSoftMatch:
                      soft_match=True)
         assert t.soft_uid is None
         assert t.soft_gap == -1.0
+
+
+# ---------------------------------------------------------------------------
+# margin_ratio 自适应置信阈值（v0.8）
+# ---------------------------------------------------------------------------
+
+class TestMarginRatio:
+    """margin_ratio：生效阈值 max(margin, ratio·√n_dict)。
+
+    背景（exp_margin_scale/exp_margin_ratio 实测）：gap 统计尺度随
+    √n_dict 增长，固定绝对 margin 对长文本偏松（"自信地错"）。ratio
+    提供按证据量放大的置信余量，是"宁可 abstain 也不错"的权衡旋钮。
+    """
+
+    def test_ratio_none_keeps_abs_compat(self):
+        """margin_ratio=None 与纯绝对 margin 行为完全一致（v0.7 兼容）。"""
+        codec = make_codec()
+        marked = codec.embed(make_text(600, seed=12), 0x0F0F, rng=random.Random(0))
+        cands = [0x0F0F, 0xF0F0]
+        b1, s1, g1 = codec.soft_match(marked, cands, margin=2.0, margin_ratio=None)
+        b2, s2, g2 = codec.soft_match(marked, cands, margin=2.0)
+        assert (b1, s1, g1) == (b2, s2, g2)
+
+    def test_ratio_zero_keeps_abs(self):
+        """margin_ratio=0 退化为纯绝对 margin。"""
+        codec = make_codec()
+        marked = codec.embed(make_text(600, seed=13), 0x2468, rng=random.Random(0))
+        cands = [0x2468, 0xFFFF]
+        b1, s1, g1 = codec.soft_match(marked, cands, margin=2.0, margin_ratio=0.0)
+        b2, s2, g2 = codec.soft_match(marked, cands, margin=2.0, margin_ratio=None)
+        assert (b1, s1, g1) == (b2, s2, g2)
+
+    def test_ratio_scales_margin_up(self):
+        """ratio 把生效阈值放大到 ratio·√n_dict，使原通过的高 gap 转 abstain。"""
+        codec = make_codec()
+        marked = codec.embed(make_text(600, seed=14), 0x5A5A, rng=random.Random(0))
+        cands = [0x5A5A, 0xF0F0]
+        n_dict = codec.detect(marked).n_dict_words
+        b_abs, _, gap = codec.soft_match(marked, cands, margin=0.0)
+        b_scaled, _, _ = codec.soft_match(marked, cands, margin=0.0, margin_ratio=10.0)
+        assert b_abs == 0x5A5A              # 无自适应时正常匹配
+        assert b_scaled is None             # 自适应放大后 abstain
+        assert gap < 10.0 * (n_dict ** 0.5)  # gap 确实低于放大后的阈值
+
+    def test_ratio_abs_dominant_for_small_corpus(self):
+        """ratio·√n_dict < margin 时 max 取绝对项，行为不变。"""
+        codec = make_codec()
+        marked = codec.embed(make_text(80, seed=15), 0x00FF, rng=random.Random(0))
+        cands = [0x00FF, 0xFF00]
+        b1, s1, g1 = codec.soft_match(marked, cands, margin=2.0, margin_ratio=0.001)
+        b2, s2, g2 = codec.soft_match(marked, cands, margin=2.0, margin_ratio=None)
+        assert (b1, s1, g1) == (b2, s2, g2)
+
+
+class TestTraceMarginRatio:
+    def test_trace_forwards_margin_ratio(self):
+        """trace 的 match_margin_ratio 透传到 soft_match，超大 ratio 全部 abstain。"""
+        reg = UIDRegistry()
+        reg.register("alice", uid=0x1234)
+        reg.register("bob", uid=0x5678)
+        wm = Watermarker(registry=reg)
+        res = wm.embed(make_text(600, seed=16), user_id="alice")
+        # 巨大 ratio：生效阈值远超任何 gap → soft_uid=None，不误指用户
+        t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
+                     soft_match=True, match_margin_ratio=100.0)
+        assert t.soft_uid is None
+        assert t.user is None
+        assert t.soft_gap >= 0
+
+    def test_trace_ratio_none_compat(self):
+        """match_margin_ratio 默认 None，trace 行为与 v0.7 一致。"""
+        reg = UIDRegistry()
+        reg.register("alice", uid=0x1234)
+        wm = Watermarker(registry=reg)
+        res = wm.embed(make_text(600, seed=17), user_id="alice")
+        t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
+                     soft_match=True)
+        assert t.soft_uid == 0x1234
+        assert t.user == "alice"
