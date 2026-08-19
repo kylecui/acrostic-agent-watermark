@@ -21,3 +21,6 @@ experiments/out/
 .vscode/
 .DS_Store
 corpus/
+
+# 本地会话记忆（不入库）
+.workbuddy/

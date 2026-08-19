@@ -1,0 +1,26 @@
+{
+  "n_groups": 222,
+  "transfer": {
+    "keep": 6810,
+    "grp_sub": 174,
+    "del": 1150,
+    "new": -322,
+    "n1": 8134,
+    "n2": 7812,
+    "pairs": 4057,
+    "keep_p": 0.8372,
+    "grp_sub_p": 0.0214,
+    "del_p": 0.1414
+  },
+  "dict_words_per_doc": 51.5,
+  "rt_ham_mean": 0.0,
+  "paws_ham_mean": 0.7,
+  "paws_le1": "90%",
+  "paws_le2": "93%",
+  "paws_sumz": 18.0,
+  "s30_ham_mean": 1.2,
+  "s30_le1": "67%",
+  "s30_sumz": 15.5,
+  "s50_ham_mean": 3.4,
+  "sumz_marked": 24.6
+}

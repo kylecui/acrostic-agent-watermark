@@ -188,6 +188,36 @@ EN 70% 改写: uid=0xEDE3（汉明距 14/16 ≈ 随机猜），Σ|z|=39.9 存在
 （固定词数攻击才是公平对比：比例攻击下词典 4 倍 ⇒ 攻击面同步 4 倍，
 "变差"是攻击面扩大的对称代价，非能力退化。）
 
+### 二·五·A、PAWS 温和改写攻击谱（2026-08-19，P2 销项）
+
+`experiments/exp_paws_attack.py`：PAWS-X zh **train 正样本对（21829 对）**标定
+"词典词级转移矩阵"（水印词典视角，4057 对 / 8134 词）：
+
+| 词典词命运 | 占比 | 对水印影响 |
+|---|---|---|
+| 字面保留 | **83.7%** | 信号不动 |
+| 组内同义替换 | 2.14% | 颜色随词，~50% 翻转 |
+| 删除 / 组外改写 | **14.1%** | 信号全丢 |
+
+把转移概率作用在带水印文本上，模拟"攻击者对 marked 做 PAWS 级改写"
+（30 篇拼接文档，每篇 20 句 ≈ 900 字，词典词均值 51）：
+
+| 攻击 | 汉明均值 | ≤1 | ≤2 | Σ\|z\| |
+|---|---|---|---|---|
+| 嵌入往返（基线）| 0.00 | 100% | 100% | 24.6 |
+| **PAWS 温和改写** | **0.70** | **90%** | **93%** | **18.0** |
+| 同组 30% 狠攻 | 1.20 | 67% | 93% | 15.5 |
+| 同组 50% 狠攻 | 3.40 | 3% | 27% | 11.2 |
+
+**结论**：温和改写（PAWS 级）下水印存活良好——汉明 0.70、90% ≤1，
+注册库 Hamming≤3 完全覆盖；破坏力低于同组 30% 替换（攻击谱单调）。
+PAWS 净信号丢失 ~15.3%（14.1% 全丢 + 2.14%×50%），与同组 30% 替换
+（30%×50%）理论相当，实测汉明更低源于组内替换有时换回同色词。
+
+**方法论注意**：不能把 PAWS 的 sentence2 直接当"改写结果"检测——它是未嵌入
+的独立自然文本，检测结果≈null 噪声是"信号从不存在"的必然，不构成攻击。
+PAWS 的价值在标定"词典词命运"转移参数，而非提供已嵌入的改写文本。
+
 **真实语料替换实例**（英文，Pride and Prejudice 开头，uid=0x1000）：
 
 ```text
@@ -283,12 +313,14 @@ BPE 表需网络下载（沙箱失败）+ 模型生态绑定违背零依赖原�
 
 | # | 语料 | 语言 | 具体下载 | 放置文件名 | 状态 |
 |---|---|---|---|---|---|
-| 6 | PAWS(-X) | EN/ZH | github.com/google-research-datasets/paws（含 PAWS-X 中文子集）| `corpus/paraphrase/paws_*.tsv` | ✅ 数据已下载（parquet），实验未接入 |
-| 7 | CSTS / NLPCC 改写对 | ZH | 搜"CSTS 中文句子相似度数据集" | `corpus/paraphrase/csts.tsv` | ⬜ |
+| 6 | PAWS(-X) | EN/ZH | github.com/google-research-datasets/paws（含 PAWS-X 中文子集）| `corpus/paraphrase/*.parquet` | ✅ 已接入（2026-08-19，见 §二·五） |
+| 7 | CSTS / NLPCC 改写对 | ZH | 搜"CSTS 中文句子相似度数据集" | `corpus/paraphrase/csts.tsv` | ⬜ 可选 |
 
 用途：目前攻击模拟 = 同义词组内随机换（对水印最狠的改写）；
 PAWS 是人工构造的高重叠改写，可测"温和改写"下的存活率，补全攻击谱。
-**（当前第一待办）**
+**已落地**：`experiments/exp_paws_attack.py`（PAWS-X zh train 正样本对 21829
+对，标定词典词级转移矩阵后生成参数化温和攻击，见 §二·五攻击谱）。
+#7 为可选增强（中文领域更广的改写风格），暂不阻塞。
 
 **最少集**：仅需 #1 + #2 + #5 即可复现全部能力结论（已全部到位）。
 
@@ -298,6 +330,8 @@ PAWS 是人工构造的高重叠改写，可测"温和改写"下的存活率，�
 
 ```bash
 python3 experiments/exp_capability_demo.py   # 本文全部 ✅/❌ 数据（固定种子）
+python3 experiments/exp_real_corpus.py       # 二·五 真实语料实测（需 corpus/en·zh·dict）
+python3 experiments/exp_paws_attack.py       # 二·五·A PAWS 温和改写攻击谱（需 corpus/paraphrase）
 python3 experiments/exp_attack_surface.py    # §13.9 攻击数据
 python3 examples/04_dual_channel.py          # 双信道四场景联合判决
 python3 -m pytest tests/ -q                  # 104+ 项测试
