@@ -21,9 +21,16 @@ sentence2 是未嵌入的独立自然文本，检测它等于检测 null 文档�
   同组 30% 狠攻  汉明 1.20  ≤1=67%   Σ|z| →15.5
   同组 50% 狠攻  汉明 3.40  ≤1=3%    Σ|z| →11.2
 
-结论：温和改写（PAWS 级）水印存活良好；重度改写（PKU 级，过半词典词被删）
-信号几乎全丢，等同 null——这是词典级水印的物理边界，算法增强的方向是
-扩大词典覆盖 + 冗余编码（见 docs/design.md 鲁棒性增强章节）。
+结论：温和改写（PAWS 级）水印存活良好；重度改写（PKU 级，过半词典词
+被删）的存活率**取决于"删除"的实现物理**——见 `paraphrase_style_attack`
+的 del_mode 参数：
+  - flip（反色同组替换，历史口径）：需知密钥颜色，属上帝视角上限攻击；
+    带内绿率 1.0→0.5，z 均值归零，UID≈随机（0/30）。
+  - 真实物理（del 词消失或落回词典、颜色随机）：z 符号保持，仅样本
+    减半+少量污染；生产词典（D3r）下 soft 匹配 30/30（exp_dict_expansion
+    实测）。"PKU 删除攻击是物理边界"的旧结论源于 flip 口径，已修正
+    （见 exp_pku_real_physics.py / design §13.13）。
+真实威胁仍是同义替换攻击（s30/s50，synonym_attack 口径）。
 """
 from __future__ import annotations
 
@@ -108,17 +115,44 @@ def transfer_matrix(codec: GreenlistCodec, pairs: list[tuple[str, str]],
 
 
 def paraphrase_style_attack(codec: GreenlistCodec, text: str, seed: int,
-                            p_del: float, p_grp: float) -> str:
-    """参数化温和攻击：词典词按实测转移概率处理（真实改写对标定）。"""
+                            p_del: float, p_grp: float, *,
+                            del_mode: str = "flip", alpha: float = 0.5) -> str:
+    """参数化温和攻击：词典词按实测转移概率处理（真实改写对标定）。
+
+    del_mode 控制"删除/组外"(p_del) 的物理实现——这是决定攻击破坏力的
+    关键假设（exp_pku_real_physics 实测差异巨大）：
+      flip      —— del → 反色同组替换（历史口径）。需知密钥颜色才能选
+                     反色词，属"上帝视角"上限攻击；带内 n 不变、绿率
+                     1.0→0.5，z 均值归零 → UID 随机（最悲观，0/30）。
+      remove    —— del → token 消失（真实"删除"物理）。带内 n 减半、
+                     绿率保持 ~1.0，z 符号保持 → UID 大多可解（30/30）。
+      rand_dict —— del → 换成词典内随机组词（颜色随机污染，α=1.0 上限）。
+      mix       —— del 词以概率 alpha 变词典随机词、否则消失。真实 PKU
+                     改写对实测 alpha≈0.36~0.72（del 词落回词典的比例），
+                     代表值 0.5。
+    默认 flip 保持历史口径兼容；真实物理用 mix/remove。
+    """
     r = random.Random(seed)
     out = []
     for raw, norm in codec._tokenizer(text):
         grp = codec._w2group.get(norm) if norm else None
         if grp:
             x = r.random()
-            if x < p_del:  # 删除/组外改写 → 换颜色相反的同组词（信号全丢）
-                alts = [c for c in grp if c != norm and codec.green(c) != codec.green(norm)]
-                out.append(r.choice(alts) if alts else raw)
+            if x < p_del:  # 删除/组外改写
+                if del_mode == "flip":
+                    alts = [c for c in grp if c != norm and codec.green(c) != codec.green(norm)]
+                    out.append(r.choice(alts) if alts else raw)
+                elif del_mode == "remove":
+                    continue  # token 消失，不计入统计
+                elif del_mode == "rand_dict":
+                    head = r.choice(list(codec._groups))
+                    out.append(r.choice(codec._groups[head]))
+                else:  # mix
+                    if r.random() < alpha:
+                        head = r.choice(list(codec._groups))
+                        out.append(r.choice(codec._groups[head]))
+                    else:
+                        continue
             elif x < p_del + p_grp:  # 组内同义改写 → 同组随机（颜色半翻转）
                 alts = [c for c in grp if c != norm]
                 out.append(r.choice(alts) if alts else raw)
@@ -179,7 +213,8 @@ def main() -> None:
                                              tm_paws["del_p"], tm_paws["grp_sub_p"]),
              paws_b, sumz_paws),
             ("pku", paraphrase_style_attack(codec, marked, 300 + i,
-                                            tm_pku["del_p"], tm_pku["grp_sub_p"]),
+                                            tm_pku["del_p"], tm_pku["grp_sub_p"],
+                                            del_mode="mix", alpha=0.5),
              pku_b, sumz_pku),
         ):
             d, a = codec.masked_hamming(rw, uid)
@@ -200,7 +235,7 @@ def main() -> None:
     print(f"\n词典词/文档: 均值={sum(dict_counts) / len(dict_counts):.0f}")
     report("嵌入往返(基线)", rt)
     report("PAWS温和改写(实测参数)", paws_b)
-    report("PKU重度改写(实测参数)", pku_b)
+    report("PKU重度改写(实测参数, del=mix真实物理)", pku_b)
     report("同组30%狠攻", s30)
     report("同组50%狠攻", s50)
     print(f"[Σ|z|] 嵌入后={sum(sumz_rt) / len(sumz_rt):.1f}  "

@@ -2,8 +2,8 @@
 """exp_dict_expansion.py: 词典扩容对水印鲁棒性的影响（方向 1 落地实验）。
 
 背景（design §13.11 结论）：16 band 全信息位 + 掩码 + soft_match 已是
-最优编码结构；突破 PKU 重度改写边界的唯一途径是扩大词典覆盖
-（提高 n_dict_words）——本实验验证该结论。
+最优编码结构；提升真实存活率的途径是扩大词典覆盖（提高 n_dict_words）
+——本实验验证该结论。
 
 对比配置：
   ZH: D0 生产小词典(260 组) | D1 词林'='(6.6k 组) | D2 词林'='+'#'(含近义)
@@ -13,6 +13,12 @@
   1. 真实语料 n_dict_words（信号容量）
   2. 攻击谱匹配率（A1 硬 n>=1 / B1 soft n>=1，与 exp_soft_match 同口径）
   3. 存在性分离度：null vs marked 的 Σ|z| 间隔（扩容不能牺牲存在性）
+
+PKU 攻击双口径（§13.13 物理修正）：
+  pku      —— del_mode="mix", alpha=0.5（真实物理：del 词半消失半落回
+              词典随机污染）；D3r soft 30/30
+  pku_flip —— del_mode="flip"（历史上帝视角口径，需知密钥颜色）；
+              D3r 0/30，仅作上限对照
 
 语料：ZH 用 PAWS 正例拼接（同 exp_soft_match）；EN 用 Gutenberg 三书。
 """
@@ -159,7 +165,11 @@ def zh_section():
             if tag == "paws":
                 return paraphrase_style_attack(codec, marked, 200 + i,
                                                tm_paws["del_p"], tm_paws["grp_sub_p"])
-            if tag == "pku":
+            if tag == "pku":  # 真实物理：del 词 50% 落回词典（颜色随机）、50% 消失
+                return paraphrase_style_attack(codec, marked, 300 + i,
+                                               tm_pku["del_p"], tm_pku["grp_sub_p"],
+                                               del_mode="mix", alpha=0.5)
+            if tag == "pku_flip":  # 历史口径：del → 反色同组替换（上帝视角上限）
                 return paraphrase_style_attack(codec, marked, 300 + i,
                                                tm_pku["del_p"], tm_pku["grp_sub_p"])
             if tag == "s30":
@@ -168,7 +178,7 @@ def zh_section():
                 return synonym_attack(codec, marked, 0.50, 100 + i)[0]
 
         attacks = {tag: (lambda mk, i, tag=tag: atk(tag, mk, i))
-                   for tag in ("rt", "paws", "s30", "s50", "pku")}
+                   for tag in ("rt", "paws", "s30", "s50", "pku", "pku_flip")}
         rows = run_spectrum(codec, test_docs, true_uids, candidates, attacks)
 
         marked_texts = [codec.embed(d, true_uids[i], bias=1.0, rng=random.Random(i))
@@ -181,7 +191,7 @@ def zh_section():
         print(f"  存在性: null均值={null_m:.1f} marked均值={mark_m:.1f} "
               f"最小间隔={gap:+.1f}")
         print(f"  {'攻击':5s} | {'A1 硬':>7s} | {'B1 soft':>7s}")
-        for tag in ("rt", "paws", "s30", "s50", "pku"):
+        for tag in ("rt", "paws", "s30", "s50", "pku", "pku_flip"):
             h, s = rows[tag]
             print(f"  {tag:5s} | {h:2d}/{N_TEST:<4d} | {s:2d}/{N_TEST:<4d}")
 
