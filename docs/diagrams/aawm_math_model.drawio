@@ -1,0 +1,280 @@
+<mxfile host="app.diagrams.net" agent="aawm-research">
+  <diagram name="AAWM 水印数学模型" id="aawm-math-model">
+    <mxGraphModel dx="1280" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1280" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <!-- 标题 -->
+        <mxCell id="title" value="AAWM 同义词替换水印 —— 数学形式化（docs/math_formulation.md）" style="text;html=1;align=center;verticalAlign=middle;fontSize=18;fontStyle=1;fillColor=none;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="20" y="10" width="1240" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ============ 泳道标题条 ============ -->
+        <mxCell id="lane1" value="发送端：嵌入" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="20" y="50" width="380" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lane2" value="信道：攻击的统计本质" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="420" y="50" width="400" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="lane3" value="接收端：检测判决" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=14;" vertex="1" parent="1">
+          <mxGeometry x="840" y="50" width="420" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- ============ 泳道 1：发送端 ============ -->
+        <mxCell id="s1_text" value="输入文本 T = (t₁, …, t_N)&#10;N 个 token（中文按词典切分）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="100" width="340" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_dict" value="词典 D = {G₁,…,G_M}（同义词组）+ 密钥 κ" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="170" width="340" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_band" value="h(G_j) = HMAC(K_band, G_j)₀ mod L&#10;组→带分配（L=16）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="230" width="165" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_color" value="c(w) = HMAC(K_green, w)₀ ≫ 7&#10;词→颜色 ±1（绿/红）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="215" y="230" width="165" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_uid" value="UID u ∈ {0,1}¹⁶ → 目标色 τ_b = 2u_b − 1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#6c8ebf;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="300" width="340" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_embed" value="★ 嵌入：词典词替换为组内 τ_b 色同义词&#10;（随机序 + 边界稳定检查；后验替换，保语义）&#10;嵌入质量：组内绿词比例 q_j ∈ (0,1)，翻转率 ρ_j=2q_j(1−q_j)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="360" width="340" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="s1_out" value="输出带水印文本 T′（人眼无感）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="40" y="460" width="340" height="35" as="geometry" />
+        </mxCell>
+
+        <!-- 泳道 1 边（串联） -->
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;" edge="1" parent="1" source="s1_text" target="s1_dict">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;dashed=1;endArrow=none;" edge="1" parent="1" source="s1_dict" target="s1_band">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;dashed=1;endArrow=none;" edge="1" parent="1" source="s1_dict" target="s1_color">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4c" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;dashed=1;endArrow=none;" edge="1" parent="1" source="s1_band" target="s1_uid">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4d" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;dashed=1;endArrow=none;" edge="1" parent="1" source="s1_color" target="s1_uid">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;" edge="1" parent="1" source="s1_uid" target="s1_embed">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#6c8ebf;" edge="1" parent="1" source="s1_embed" target="s1_out">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- 跨泳道标签 1 -->
+        <mxCell id="flow1" value="T′ →" style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fillColor=none;strokeColor=none;fontColor=#444444;" vertex="1" parent="1">
+          <mxGeometry x="385" y="468" width="50" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ============ 泳道 2：信道 ============ -->
+        <mxCell id="c1_syn" value="C1 同义替换攻击（强度 α）&#10;组内颜色翻转率 ρ_j = 2q_j(1−q_j)&#10;信号保持率 d_b = 1 − 2α·ρ̄_b&#10;→ 攻击「均值偏移」" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="440" y="100" width="360" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="c2_del" value="C2 段落删除攻击（比例 δ）&#10;token 在段间均匀 → 绿率不变&#10;样本量 n_b → n_b·(1−δ)&#10;→ 攻击「样本量」" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="440" y="200" width="360" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="c3_snr" value="★ 统一 SNR 方程（定理 1）★&#10;SNR_b = d_b · √(n_b·(1−δ))&#10;P_err,b = Φ(−SNR_b)&#10;z_b ~ N(d_b·√(n_b(1−δ)), 1)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontStyle=1;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="440" y="300" width="360" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="c4_lever" value="三大杠杆（推论 2）&#10;① 提高 d_b：组内颜色倾斜（ρ̄_b↓）、多通道叠加&#10;② 提高 n_b：扩词典覆盖、加长文本、减带 L&#10;③ 降低 δ 影响：长文档天然冗余（N 大→√N 抗删）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="440" y="410" width="360" height="90" as="geometry" />
+        </mxCell>
+
+        <!-- 泳道 2 边（串联 c1→c2→c3→c4） -->
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#b85450;endArrow=none;dashed=1;" edge="1" parent="1" source="c1_syn" target="c2_del">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#b85450;endArrow=none;dashed=1;" edge="1" parent="1" source="c2_del" target="c3_snr">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e10" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#b85450;endArrow=none;dashed=1;" edge="1" parent="1" source="c3_snr" target="c4_lever">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- 跨泳道标签 2 -->
+        <mxCell id="flow2" value="T′（被攻击）→" style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fillColor=none;strokeColor=none;fontColor=#444444;" vertex="1" parent="1">
+          <mxGeometry x="800" y="105" width="80" height="20" as="geometry" />
+        </mxCell>
+
+        <!-- ============ 泳道 3：接收端（串行链 + 并行分支，无交叉） ============ -->
+        <mxCell id="r1_z" value="逐带 z 检验（每带独立）&#10;z_b = (g_b − p₀,b·n_b) / √(p₀,b(1−p₀,b)·n_b)&#10;p₀ 用无水印语料标定（calibrate_p0）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="100" width="380" height="70" as="geometry" />
+        </mxCell>
+        <!-- r2_soft 和 r2_hard 并排，避免边穿越 -->
+        <mxCell id="r2_soft" value="★ 软判决（幅度积分）——最优&#10;soft_match:&#10;S(c) = Σ z_b·(2c_b−1)&#10;取 max_c S(c)&#10;gap&lt;margin 时 abstain" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="185" width="185" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="r2_hard" value="硬判决（位级，备选）&#10;û_b = ⟦z_b &gt; 0⟧&#10;UID = Σ û_b · 2^b" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#82b366;dashed=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1055" y="185" width="185" height="95" as="geometry" />
+        </mxCell>
+        <mxCell id="r3_exist" value="存在性得分 X = Σ|z_b|&#10;null: E[X] ≈ L·√(2/π) ≈ 12.8  |  marked: E[X] = Σ SNR_b（远高于 null）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="295" width="380" height="50" as="geometry" />
+        </mxCell>
+        <mxCell id="r4_out" value="输出：UID → UIDRegistry 反查 → Agent 别名（容错最近邻 ≤3 位翻转兜底）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="360" width="380" height="40" as="geometry" />
+        </mxCell>
+        <mxCell id="r5_err" value="定理 2 错误率：P_k = C(L,k)·p̄^k·(1−p̄)^{L−k}  |  定理 3 容错：P_succ(t) = Σ_{k≤t} P_k" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="860" y="415" width="380" height="40" as="geometry" />
+        </mxCell>
+
+        <!-- 泳道 3 边 -->
+        <!-- r1→r2_soft: 直接下方相邻，无碰撞 -->
+        <mxCell id="e11" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;" edge="1" parent="1" source="r1_z" target="r2_soft">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- r1→r2_hard: 从右侧绕行，避免穿过 r2_soft -->
+        <mxCell id="e12" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;dashed=1;endArrow=none;exitX=1;exitY=0.3;entryX=0.5;entryY=0;" edge="1" parent="1" source="r1_z" target="r2_hard">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- r2_soft→r3_exist: 直接下方相邻 -->
+        <mxCell id="e13" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;" edge="1" parent="1" source="r2_soft" target="r3_exist">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <!-- r3→r4→r5 串联 -->
+        <mxCell id="e14" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;" edge="1" parent="1" source="r3_exist" target="r4_out">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e15" style="edgeStyle=orthogonalEdgeStyle;rounded=1;strokeColor=#82b366;" edge="1" parent="1" source="r4_out" target="r5_err">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+
+        <!-- ============ 底部实测表 ============ -->
+        <mxCell id="table_title" value="实测验证（exp_segment_del_robust.py）—— 抗删能力 ∝ √N（UID=0x5555 高熵，65535 候选盲检 soft_match）" style="text;html=1;align=center;verticalAlign=middle;fontSize=12;fontStyle=1;fillColor=none;strokeColor=none;" vertex="1" parent="1">
+          <mxGeometry x="20" y="510" width="1240" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- 表头 (h=30, gap to first row = 5) -->
+        <mxCell id="th1" value="N 段" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="20" y="540" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="th2" value="N 词典词" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="220" y="540" width="200" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="th3" value="δ=0.5 纯段落删除" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="540" width="210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="th4" value="δ=0.7 纯段落删除" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="540" width="210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="th5" value="δ=0.9 纯段落删除" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="840" y="540" width="210" height="30" as="geometry" />
+        </mxCell>
+        <mxCell id="th6" value="50%替换+50%删（混合）" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="540" width="210" height="30" as="geometry" />
+        </mxCell>
+
+        <!-- 行 1: N=10 (h=25, gap=5) -->
+        <mxCell id="r1c1" value="10" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="20" y="575" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r1c2" value="38" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="220" y="575" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r1c3" value="1/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="575" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r1c4" value="0/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="575" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r1c5" value="0/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="840" y="575" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r1c6" value="0/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="575" width="210" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- 行 2: N=50 -->
+        <mxCell id="r2c1" value="50" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="20" y="605" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r2c2" value="203" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="220" y="605" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r2c3" value="17/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="605" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r2c4" value="12/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="605" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r2c5" value="0/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="840" y="605" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r2c6" value="0/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="605" width="210" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- 行 3: N=100 -->
+        <mxCell id="r3c1" value="100" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="20" y="635" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r3c2" value="376" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="220" y="635" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r3c3" value="20/20 ✓" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="635" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r3c4" value="18/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="635" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r3c5" value="4/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="840" y="635" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r3c6" value="4/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="635" width="210" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- 行 4: N=200 -->
+        <mxCell id="r4c1" value="200" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="20" y="665" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r4c2" value="753" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="220" y="665" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r4c3" value="20/20 ✓" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="665" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r4c4" value="20/20 ✓" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="665" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r4c5" value="16/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="840" y="665" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r4c6" value="6/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="665" width="210" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- 行 5: N=400 -->
+        <mxCell id="r5c1" value="400" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="20" y="695" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r5c2" value="1506" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#9673a6;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="220" y="695" width="200" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r5c3" value="20/20 ✓" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="420" y="695" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r5c4" value="20/20 ✓" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="630" y="695" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r5c5" value="19/20 ✓" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontStyle=1;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="840" y="695" width="210" height="25" as="geometry" />
+        </mxCell>
+        <mxCell id="r5c6" value="10/20" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontSize=11;" vertex="1" parent="1">
+          <mxGeometry x="1050" y="695" width="210" height="25" as="geometry" />
+        </mxCell>
+
+        <!-- 表底结论 -->
+        <mxCell id="conclusion" value="结论：① 长文档天然抗删（N↑→SNR↑→抗删↑）  ② 临界点：δ=.5 需 N≥400 词；δ=.9 需 N≥750 词；混合攻击需 N≥1500 词才过半  ③ 冗余的本质 = 样本量本身（每带多词投票）  ④ 短文档需纠错码辅助（牺牲 UID 位宽）  ⑤ 混合攻击是真实威胁上限，多通道叠加是降维解（§6）" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe4b5;strokeColor=#d6b656;fontStyle=1;fontSize=11;align=left;" vertex="1" parent="1">
+          <mxGeometry x="20" y="735" width="1240" height="60" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
