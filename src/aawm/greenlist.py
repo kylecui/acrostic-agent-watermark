@@ -27,7 +27,12 @@ from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .keys import KeyContext, derive_key
-from .synonym_data import load_default_en_dictionary, load_default_zh_dictionary
+from .synonym_data import (
+    load_default_en_dictionary,
+    load_default_zh_dictionary,
+    load_zero_cost_zh_block_words,
+    load_zero_cost_zh_dictionary,
+)
 
 DEFAULT_N_BANDS = 16
 _UID_BITS = 16  # v0.5 固定 16-bit UID（与 N_BANDS 对齐）
@@ -77,6 +82,105 @@ def make_zh_tokenizer(dict_words: Optional[set] = None) -> Tokenizer:
         ]
 
     return _tokenize
+
+
+def build_zero_cost_zh_codec(
+    master_key: bytes,
+    session_salt: bytes,
+    *,
+    n_bands: int = DEFAULT_N_BANDS,
+    calibrate_corpus: Optional[Sequence[str]] = None,
+) -> "GreenlistCodec":
+    """零感词典 codec（形态扩展 + 连词 + 高自然精选组）。
+
+    自动完成两件默认词典路径不做的装配：
+    1. 加载零感词典（src/aawm/data/zh_zero_cost.json）
+    2. 把单字组的语素阻断词表（和/与、或/或者... 对应的 和平/和尚/参加 等）
+       并入分词 dict_words —— 只影响分词、不进任何组，防止单字语素
+       被前向最大匹配误切命中（"参|加" 把 "加" 切出来）。
+
+    Args:
+        calibrate_corpus: 无水印参考语料。给出时自动调用 calibrate_p0
+            逐带标定绿率（默认 p0=0.5，实测带间 0.41~0.54，跳过这步
+            z 检验有系统性偏移）。建议传入部署场景语料的后半部分
+            （与嵌入文本不重叠）。
+    """
+    dictionary = load_zero_cost_zh_dictionary()
+    block = load_zero_cost_zh_block_words()
+    all_words = {w for ws in dictionary.values() for w in ws} | block
+    tokenizer = make_zh_tokenizer(dict_words=all_words)
+    codec = GreenlistCodec(
+        master_key, session_salt, n_bands=n_bands,
+        dictionary=dictionary, language_tag=b"zh", tokenizer=tokenizer,
+    )
+    if calibrate_corpus is not None:
+        codec.calibrate_p0(calibrate_corpus)
+    return codec
+
+
+def build_hybrid_zh_codec(
+    master_key: bytes,
+    session_salt: bytes,
+    *,
+    supplementary_dict: Dict[str, List[str]],
+    calibrate_corpus: Optional[Sequence[str]] = None,
+    collocation_threshold: Optional[float] = None,
+    context_texts: Optional[Sequence[str]] = None,
+    n_bands: int = DEFAULT_N_BANDS,
+) -> "GreenlistCodec":
+    """混合词典 codec：零感打底 + 补充词典补带 + 可选语料兼容性过滤。
+
+    零感词典（149 组安全词）先入取 word_owner 优先权；补充词典组
+    仅当不与零感词共享任何词时加入（先到先得不吞组）。
+
+    实验验证（exp_hybrid_codec）：混合后口语 k 从 3.9→8.2（+110%），
+    gap med 从 2.00→7.05（+253%），margin 恢复区分力。
+
+    Args:
+        supplementary_dict: 补充词典（如词林 '=' 严格同义组）。组键即
+            语义代表、必在组内。调用方负责语料频率过滤等预处理。
+        calibrate_corpus: 无水印参考语料，用于自动标定 p0。
+        collocation_threshold: 上下文兼容性过滤阈值。给出且
+            context_texts 不为 None 时，对补充词典组做过滤（低于此
+            分数的组剔除，减少"搭配域不同"导致的病句）。实测口语
+            thresh=0.05 有益（s30 86%→90%），书面语不宜（k 降太多）。
+            None 时不过滤。
+        context_texts: 用于上下文兼容性过滤的语料。需要 collocation_threshold
+            不为 None 时才使用。建议传入大语料（~250K 字符）。
+    """
+    from .collocation import build_char_context, filter_groups
+
+    zero_dict = load_zero_cost_zh_dictionary()
+    block = load_zero_cost_zh_block_words()
+    zero_words = {w for ws in zero_dict.values() for w in ws}
+
+    # 可选：语料兼容性过滤补充词典
+    supp = supplementary_dict
+    if collocation_threshold is not None and context_texts is not None:
+        supp_words = {w for ws in supp.values() for w in ws}
+        left, right = build_char_context(list(context_texts), supp_words)
+        supp, _dropped = filter_groups(
+            supp, left, right, threshold=collocation_threshold,
+        )
+
+    # 合并：零感先入，补充组跳过任何与零感词共享的组
+    merged: Dict[str, List[str]] = dict(zero_dict)
+    owned = set(zero_words)
+    for key, words in supp.items():
+        if any(w in owned for w in words):
+            continue
+        merged[key] = words
+        owned.update(words)
+
+    all_words = owned | block
+    tokenizer = make_zh_tokenizer(dict_words=all_words)
+    codec = GreenlistCodec(
+        master_key, session_salt, n_bands=n_bands,
+        dictionary=merged, language_tag=b"zh", tokenizer=tokenizer,
+    )
+    if calibrate_corpus is not None:
+        codec.calibrate_p0(calibrate_corpus)
+    return codec
 
 
 class GreenlistCodec:
@@ -442,6 +546,131 @@ class GreenlistCodec:
         if gap < margin:
             return None, best_score, gap
         return best_uid, best_score, gap
+
+    # ------------------------------------------------------------------
+    # 容量自适应（v0.9.5）：UID 有效位数 = 文档命中带数
+    # ------------------------------------------------------------------
+    # 事实：soft 得分 s(c) = Σ_b z_b·(2·bit_b(c)−1)，只在有信号带打分。
+    # 若 UID 在 2^n_bands 空间声明，真空带 bit 自由 →
+    #   与真值在全部信号带同 bit 的候选有 2^(n_bands−k) 个，得分并列。
+    # 碰撞概率 = (候选数−1)/2^k。之前候选 5000 崩（16 bit 空间）正是此因。
+    # 容量自适应把 UID 声明为 k-bit 空间（k = 命中带数）：
+    #   候选库 ≤ 2^k 时无并列者，真值得分严格最高 → 无攻击下 100% 命中。
+    # 攻击后可用信号带收缩到 k' ≤ k → 并列候选 2^(k−k') 个，
+    # 碰撞概率 = (候选数−1)/2^k'，这是攻击衰减的真实度量。
+
+    def active_bands(self, text: str, *, min_n: int = 1) -> List[int]:
+        """文本实际命中（有信号）的频带集，升序。
+
+        这是 UID 有效容量的来源：soft 得分只能区分这些带。
+        """
+        rep = self.detect(text, min_n=min_n)
+        return [st.band for st in rep.bands if st.has_signal]
+
+    def capacity(self, text: str, *, min_n: int = 1) -> int:
+        """UID 有效位数 = 命中带数。"""
+        return len(self.active_bands(text, min_n=min_n))
+
+    def map_uid(self, uid: int, bands: Sequence[int]) -> int:
+        """k-bit UID → n_bands-bit：bit i 映射到 bands[i]。
+
+        bands 需与 embed_adaptive 返回的一致（嵌入方保存的元数据）。
+        """
+        if uid < 0 or uid >= (1 << len(bands)):
+            raise ValueError(f"uid 0x{uid:X} 超出容量 {len(bands)} bit")
+        full = 0
+        for i, b in enumerate(bands):
+            if (uid >> i) & 1:
+                full |= 1 << b
+        return full
+
+    def unmap_uid(self, full_uid: int, bands: Sequence[int]) -> int:
+        """n_bands-bit → k-bit：只取 bands 上的位。"""
+        uid = 0
+        for i, b in enumerate(bands):
+            if (full_uid >> b) & 1:
+                uid |= 1 << i
+        return uid
+
+    def embed_adaptive(
+        self,
+        text: str,
+        uid: int,
+        *,
+        n_bits: Optional[int] = None,
+        bias: float = 1.0,
+        rng: Optional[random.Random] = None,
+    ) -> Tuple[str, List[int]]:
+        """容量自适应嵌入。
+
+        默认 n_bits = 文档容量（全部活动带编码）；可传小容量留冗余。
+        返回 (标记文本, 实际使用的带集 bands)。发布方应保存 bands 作为
+        检测元数据，并以 n_bits-bit 形式注册 UID。
+        """
+        bands = self.active_bands(text, min_n=1)
+        if n_bits is None:
+            n_bits = len(bands)
+        if not (0 <= n_bits <= len(bands)):
+            raise ValueError(f"n_bits={n_bits} 超出文档容量 {len(bands)}")
+        if uid < 0 or uid >= (1 << n_bits):
+            raise ValueError(f"uid 0x{uid:X} 超出容量 {n_bits} bit（文档实际 {len(bands)} bit）")
+        used = bands[:n_bits]
+        full = self.map_uid(uid, used)
+        return self.embed(text, full, bias=bias, rng=rng), used
+
+    def detect_adaptive(
+        self,
+        text: str,
+        bands: Optional[Sequence[int]] = None,
+        *,
+        min_n: int = 1,
+    ) -> Tuple[int, List[int], BandReport]:
+        """容量自适应检测。
+
+        Args:
+            text: 嫌疑文本
+            bands: 嵌入方保存的带集元数据。缺省时用待测文本自身的
+                活动带（攻击后带集收缩会丢位，语义为"当前可读的信息"）。
+            min_n: 参与检测的最小带内词数。
+
+        Returns:
+            (uid, active, report)：
+                uid: 还原的 k-bit UID；无法读取的带 bit=0（需结合 active 判定）
+                active: 实际读到信号的带（bands 的子集；缺失的带 = 信息被删）
+                report: 逐带统计
+        """
+        rep = self.detect(text, min_n=min_n)
+        if bands is None:
+            bands = [st.band for st in rep.bands if st.has_signal]
+        active_set = {st.band for st in rep.bands if st.has_signal}
+        uid = 0
+        for i, b in enumerate(bands):
+            if b in active_set and ((rep.uid >> b) & 1):
+                uid |= 1 << i
+        return uid, [b for b in bands if b in active_set], rep
+
+    def soft_match_adaptive(
+        self,
+        text: str,
+        candidates: Sequence[int],
+        bands: Sequence[int],
+        *,
+        min_n: int = 1,
+        margin: float = 0.0,
+        margin_ratio: Optional[float] = None,
+    ) -> Tuple[Optional[int], float, float]:
+        """容量自适应 soft 匹配：candidates 是 k-bit UID，展开后打分。
+
+        bands 为嵌入方保存的带集元数据。返回 (best_uid, score, gap)，
+        best_uid 为 k-bit 空间的结果（None 表示置信不足 abstain）。
+        """
+        full_cands = [self.map_uid(c, bands) for c in candidates]
+        best_full, sc, gap = self.soft_match(
+            text, full_cands, min_n=min_n, margin=margin, margin_ratio=margin_ratio,
+        )
+        if best_full is None:
+            return None, sc, gap
+        return self.unmap_uid(best_full, bands), sc, gap
 
 
 @dataclass(frozen=True)

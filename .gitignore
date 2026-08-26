@@ -24,3 +24,8 @@ corpus/
 
 # 本地会话记忆（不入库）
 .workbuddy/
+
+# 发布验证临时产物
+tmp_e2e/
+tmp_install/
+tmp_smoke/

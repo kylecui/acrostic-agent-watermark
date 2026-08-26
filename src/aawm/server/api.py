@@ -46,6 +46,9 @@ class TraceRequest(BaseModel):
     session_salt: Optional[str] = None  # hex
     seal: Optional[dict] = None
     language: Optional[str] = None
+    # 自适应路径元数据（embed 返回，需存档回传）
+    bands: Optional[List[int]] = None
+    n_bits: Optional[int] = None
 
 
 class TraceResponse(BaseModel):
@@ -58,6 +61,13 @@ class TraceResponse(BaseModel):
     tampered_paragraphs: List[int] = []
     existence_score: float = 0.0
     n_dict_words: int = 0
+    # 自适应路径信息
+    codec_mode: str = "default"
+    capacity: int = 0
+    n_bits: int = 0
+    active_bands: int = 0
+    soft_uid: Optional[int] = None
+    soft_gap: float = -1.0
 
 
 class EmbedRequest(BaseModel):
@@ -66,6 +76,7 @@ class EmbedRequest(BaseModel):
     session_salt: Optional[str] = None
     sign: bool = True
     language: Optional[str] = None
+    n_bits: Optional[int] = None
 
 
 class EmbedResponse(BaseModel):
@@ -75,6 +86,11 @@ class EmbedResponse(BaseModel):
     user_alias: Optional[str] = None
     has_seal: bool = False
     existence_score: float = 0.0
+    # 自适应路径元数据（检测时需回传）
+    codec_mode: str = "default"
+    bands: List[int] = []
+    capacity: int = 0
+    n_bits: int = 0
 
 
 # ----------------------------------------------------------------------
@@ -85,7 +101,7 @@ def create_app():
     """创建 FastAPI app。"""
     from fastapi import FastAPI, HTTPException
 
-    app = FastAPI(title="AAWM Watermark Service", version="0.6.0")
+    app = FastAPI(title="AAWM Watermark Service", version="0.7.0")
 
     @app.get("/v1/health")
     async def health() -> dict:
@@ -115,6 +131,8 @@ def create_app():
             session_salt=session_salt,
             seal=seal,
             language=req.language,
+            bands=req.bands,
+            n_bits=req.n_bits,
         )
 
         return TraceResponse(
@@ -127,6 +145,12 @@ def create_app():
             tampered_paragraphs=result.tampered_paragraphs,
             existence_score=result.existence_score,
             n_dict_words=result.n_dict_words,
+            codec_mode=result.codec_mode,
+            capacity=result.capacity,
+            n_bits=result.n_bits,
+            active_bands=result.active_bands,
+            soft_uid=result.soft_uid,
+            soft_gap=result.soft_gap,
         )
 
     @app.post("/v1/embed", response_model=EmbedResponse)
@@ -141,6 +165,7 @@ def create_app():
             session_salt=session_salt,
             sign=req.sign,
             language=req.language,
+            n_bits=req.n_bits,
         )
 
         return EmbedResponse(
@@ -150,6 +175,10 @@ def create_app():
             user_alias=result.user_alias,
             has_seal=result.seal is not None,
             existence_score=result.existence_score,
+            codec_mode=result.codec_mode,
+            bands=result.bands,
+            capacity=result.capacity,
+            n_bits=result.n_bits,
         )
 
     return app

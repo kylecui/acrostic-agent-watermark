@@ -1,4 +1,4 @@
-# AAWM API 参考（v0.6 插件层）
+# AAWM API 参考（v0.7 插件层）
 
 > 算法层 API（GreenlistCodec / DocumentBinder / CAEmbedder 等）见 `docs/design.md`。
 > 本文只覆盖插件层（`aawm.plugins`）。
@@ -27,8 +27,23 @@ Watermarker(
     registry: UIDRegistry | None = None,      # UID 注册库（None=无注册库，str 别名哈希为 UID）
     language: str = "auto",                   # "en" / "zh" / "auto"（按 CJK 检测）
     thresholds: DetectionThresholds | None = None,
+    codec_mode: str = "default",              # v0.7 中文 codec：default/zero_cost/hybrid
+    supplementary_dict: dict | None = None,   # v0.7 hybrid 模式的补充词表
+    calibrate_corpus: list[str] | None = None,  # v0.7 null 语料（零感模式阈值标定）
 ) -> None
 ```
+
+**codec 模式（v0.7，仅中文生效；英文恒走 default）**：
+
+| 模式 | 词典 | 适用 |
+|---|---|---|
+| `default` | 全词林（4538 组） | 向后兼容，容量大但替换扰动明显 |
+| `zero_cost` | 零感词典（75 组双字词） | **推荐**，嵌入对文本观感几乎无扰动 |
+| `hybrid` | 零感打底 + `supplementary_dict` 补带 | 需要比 zero_cost 更大容量时 |
+
+`calibrate_corpus` 提供**未加水印**的正常输出样本后，`_fit_null_model`
+用每带归一化 ratio 模型（Σ|z|/m）在 5 个 salt 上采样、3σ 上界作为
+null 阈值——能显著降低零感模式的误报（实测 null 误报 13/30 → 0/30）。
 
 ### `embed()`
 
@@ -42,8 +57,14 @@ result = wm.embed(
     language: str | None = None,        # 覆盖实例默认
     bias: float = 1.0,                  # 嵌入强度 [0,1]
     rng_seed: int | None = None,        # 指定后确定性嵌入
+    n_bits: int | None = None,          # v0.7 自适应模式编码位数（None=满容量；<容量留冗余带抗替换）
 ) -> EmbedResult
 ```
+
+**自检重试（v0.7）**：中文自适应模式嵌入后会用 `detect_adaptive` 回验解码
+UID，并要求存在性得分 ≥1.5×阈值；不达标自动换盐重试（最多 4 次），
+返回信号最强的结果。根因防御：同义候选与邻字成词（如"不但"+"是"→"但是"）
+时该词颜色无法翻转会导致单带误码。
 
 ### `trace()`
 
@@ -57,8 +78,15 @@ result = wm.trace(
     soft_match: bool = False,            # v0.7 软判决注册库匹配（见下）
     match_margin: float = 2.0,           # 软判决置信阈值（最优-次优得分差下限）
     match_margin_ratio: float | None = None,  # v0.8 自适应置信系数（见下）
+    bands: list[int] | None = None,      # v0.7 自适应路径的带列表（embed 返回，需回传）
+    n_bits: int | None = None,           # v0.7 自适应路径的编码位数
 ) -> TraceResult
 ```
+
+**自适应路径（v0.7）**：传 `bands` 时走 `detect_adaptive`（零感/混合词典的
+逐带 z 检测），存在性阈值用 null 线性模型或 `adaptive_intercept/slope`；
+不传则走旧 `detect`（default 词典），两者检测口径不同，trace 时务必
+回传 embed 返回的 `bands/n_bits`。
 
 **软判决注册库匹配（v0.7 鲁棒性增强）**：`soft_match=True` 时，用
 `GreenlistCodec.soft_match` 对注册库全部 UID 逐带 z 打点积分
@@ -99,6 +127,11 @@ class EmbedResult:
     language: str                  # "en" / "zh"
     n_dict_words: int              # 词典命中词数（容量指标）
     existence_score: float         # 嵌入后自检的存在性得分
+    # v0.7 自适应路径
+    codec_mode: str = "default"    # default/zero_cost/hybrid
+    bands: list[int] = []          # 活动带列表（trace 时必须回传）
+    capacity: int = 0              # 活动带数（k-bit 容量）
+    n_bits: int = 0                # 实际编码位数（含冗余时 < capacity）
 ```
 
 ## TraceResult
@@ -118,6 +151,12 @@ class TraceResult:
     n_dict_words: int              # 词典命中数
     soft_uid: int | None           # 软判决匹配 UID（soft_match=True 时）
     soft_gap: float                # 软判决最优-次优得分差（未启用=-1.0）
+    # v0.7 自适应路径
+    codec_mode: str = "default"    # default/zero_cost/hybrid
+    bands: list[int] = []          # 检测用的带列表（embed 回传）
+    capacity: int = 0              # 嵌入时的容量
+    n_bits: int = 0                # 嵌入时的编码位数
+    active_bands: int = 0          # 攻击后仍存活的活动带数
 ```
 
 ## DetectionThresholds
@@ -129,6 +168,9 @@ class DetectionThresholds:
     existence_floor: float = 8.0   # 阈值下限
     confidence_scale: float = 40.0 # 置信度归一化分母
     max_hamming: int = 3           # 注册库匹配容错
+    # v0.7 自适应路径阈值（无 null 标定时的默认线性常数）
+    adaptive_intercept: float = 1.0
+    adaptive_slope: float = 1.6    # 阈值 ≈ intercept + slope × 活动带数
 ```
 
 ---
@@ -327,6 +369,21 @@ aawm serve --key F [--registry F] [--port 8765] [--log-level info]
 # INPUT 为 "-" 时读 stdin；embed -o 时同时生成 OUT.meta.json（salt+seal）
 ```
 
+**v0.7 中文 codec 选项**（`embed` / `trace` / `serve` 通用）：
+
+```bash
+aawm embed input.txt --key key.json --user 42 \
+      --codec-mode zero_cost --calibrate-corpus ./corpus/ -o marked.txt
+#   --codec-mode {default,zero_cost,hybrid}    # 默认 default（英文恒 default）
+#   --calibrate-corpus DIR|FILE                # null 语料（目录下所有 .txt 或单文件）
+#   --n-bits N                                 # embed 用：编码位数（None=满容量）
+```
+
+- `embed` 的 meta.json 额外写入 `codec_mode / bands / capacity / n_bits`
+- `trace` 读 meta.json 自动回传 `bands/n_bits`；stderr 输出
+  `自适应: 容量=… 存活带=…`
+- `serve` 接受 `--codec-mode / --calibrate-corpus` 配置服务端 watermarker
+
 trace 退出码：0=检出水印，2=未检出。
 
 ---
@@ -337,24 +394,28 @@ trace 退出码：0=检出水印，2=未检出。
 
 ```json
 // 请求
-{"text": "...", "session_salt": "<hex>", "seal": {...}, "language": "en"}
+{"text": "...", "session_salt": "<hex>", "seal": {...}, "language": "en",
+ "bands": [2,5,9], "n_bits": 6}   // v0.7：自适应路径需回传 bands/n_bits
 // session_salt/seal 可选；seal 结构同 embed 响应
 
 // 响应
 {"watermarked": true, "uid": 4660, "user": "user-alice", "hamming_dist": 1,
  "confidence": 0.45, "tampered": false, "tampered_paragraphs": [],
- "existence_score": 18.1, "n_dict_words": 46}
+ "existence_score": 18.1, "n_dict_words": 46,
+ "codec_mode": "zero_cost", "capacity": 6, "n_bits": 6, "active_bands": 5}
 ```
 
 ### POST /v1/embed
 
 ```json
 // 请求
-{"text": "...", "user_id": "user-alice", "session_salt": null, "sign": true}
+{"text": "...", "user_id": "user-alice", "session_salt": null, "sign": true,
+ "n_bits": null}   // v0.7：自适应模式编码位数（可选）
 
 // 响应
 {"watermarked_text": "...", "session_salt": "<hex>", "user_id": 4660,
- "user_alias": "user-alice", "has_seal": true, "existence_score": 18.1}
+ "user_alias": "user-alice", "has_seal": true, "existence_score": 18.1,
+ "codec_mode": "zero_cost", "bands": [2,5,9], "capacity": 6, "n_bits": 6}
 ```
 
 ### GET /v1/health
@@ -362,6 +423,9 @@ trace 退出码：0=检出水印，2=未检出。
 ```json
 {"status": "ok", "watermarker_initialized": true}
 ```
+
+> 服务端 watermarker 模式由 `aawm serve --codec-mode … --calibrate-corpus …` 配置；<br>
+> 也可在代码里 `set_watermarker(Watermarker(codec_mode="zero_cost", …))` 后 `create_app()`。
 
 ---
 

@@ -5,7 +5,7 @@ v0.5: 双信道签名架构 —— 信道 A 段落 Merkle-HMAC 绑定 + 信道 B
 v0.6: 通用 Agent 插件层 —— Facade / 中间件 / 流式 / 框架适配器。
 """
 
-__version__ = "0.6.0"
+__version__ = "0.7.0"
 
 from .keys import derive_key, KeyContext, generate_master_key, generate_session_salt
 from .stats import z_test, DetectionResult
@@ -41,7 +41,13 @@ from .zh import (
     ZhAdapter,
     get_adapter,
 )
-from .greenlist import GreenlistCodec, BandReport, BandStat
+from .greenlist import (
+    GreenlistCodec,
+    BandReport,
+    BandStat,
+    build_zero_cost_zh_codec,
+    build_hybrid_zh_codec,
+)
 from .binding import DocumentBinder, BindingSeal, BindingVerdict, VerdictKind
 
 __all__ = [
@@ -92,6 +98,8 @@ __all__ = [
     "GreenlistCodec",
     "BandReport",
     "BandStat",
+    "build_zero_cost_zh_codec",
+    "build_hybrid_zh_codec",
     # 信道 A：段落 Merkle-HMAC 绑定（v0.5）
     "DocumentBinder",
     "BindingSeal",

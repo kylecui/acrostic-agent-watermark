@@ -42,6 +42,50 @@ aawm registry list --registry registry.json
 > **密钥安全**：master_key 是溯源的唯一凭证。建议放 KMS / 环境变量，不要提交进代码库。
 > `key.json` 已自动 chmod 600。
 
+### 中文零感模式（v0.7，推荐）
+
+中文输出建议显式启用 `zero_cost` 模式并做 null 标定——嵌入对文本观感几乎
+无扰动，且标定后存在性检测的误报率显著下降（实测 13/30 → 0/30）。
+
+```python
+from aawm.plugins import Watermarker
+
+wm = Watermarker.from_config(
+    "key.json", "registry.json",
+    codec_mode="zero_cost",                       # default / zero_cost / hybrid
+    calibrate_corpus=open("normal_outputs.txt", encoding="utf-8").readlines(),
+)
+```
+
+标定语料是**未加水印的正常 Agent 输出**（几十篇即可，纯文本、无结构要求）。
+`hybrid` 模式额外传 `supplementary_dict={词: [同义词, ...]}` 补带，适合需要
+比 `zero_cost` 更大容量的场景。`default` 模式行为与 v0.6 完全一致（向后兼容）。
+
+**嵌入 → 溯源（自适应路径）**：
+
+```python
+result = wm.embed(agent_output, user_id="user-alice")
+# 发布 result.watermarked_text
+# 存档：result.session_salt + result.bands + result.n_bits   ← 三者缺一不可
+
+trace = wm.trace(suspect_text,
+                 session_salt=result.session_salt,
+                 bands=result.bands,        # 不传会退化到 default 检测口径
+                 n_bits=result.n_bits)
+```
+
+CLI 等价写法：
+
+```bash
+aawm embed input.txt --key key.json --user user-alice \
+      --registry registry.json --codec-mode zero_cost \
+      --calibrate-corpus ./normal_outputs/ -o marked.txt
+aawm trace marked.txt --key key.json --registry registry.json --meta marked.txt.meta.json
+```
+
+`embed` 自动把 `bands/n_bits/capacity/codec_mode` 写进 `meta.json`，`trace
+--meta` 会读取回传，无需手工维护。
+
 ---
 
 ## 方式一：LangChain v1 中间件
@@ -234,6 +278,8 @@ trace = watermarker.trace(
     suspect_text,
     session_salt=stored_salt,   # 可选，但强烈建议
     seal=stored_seal,           # 可选，篡改检测用
+    bands=stored_bands,         # v0.7：零感模式必须回传（embed 返回）
+    n_bits=stored_n_bits,       # v0.7：零感模式建议回传
 )
 
 print(trace.watermarked)     # True/False —— 有没有水印

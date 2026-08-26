@@ -44,6 +44,10 @@ class EmbedResult:
         language: 使用的语言
         n_dict_words: 词典命中词数
         existence_score: 存在性得分（嵌入后自检）
+        codec_mode: 使用的 codec 模式（"zero_cost"/"hybrid"/"default"）
+        bands: 自适应编码使用的带列表（自适应检测需要，需存档）
+        capacity: 文档有效容量 k（活动带数）
+        n_bits: 实际编码位数（含冗余时 < capacity）
     """
     watermarked_text: str
     session_salt: bytes
@@ -53,6 +57,10 @@ class EmbedResult:
     language: str = "en"
     n_dict_words: int = 0
     existence_score: float = 0.0
+    codec_mode: str = "default"
+    bands: List[int] = field(default_factory=list)
+    capacity: int = 0
+    n_bits: int = 0
 
 
 @dataclass
@@ -72,6 +80,10 @@ class TraceResult:
         n_dict_words: 词典命中词数
         soft_uid: 软判决匹配结果 UID（trace(soft_match=True) 时填充；未匹配=低置信时为 None）
         soft_gap: 软判决最优与次优候选得分差（soft 路径的置信度量；未启用时为 -1.0）
+        codec_mode: 使用的 codec 模式
+        bands: 自适应检测使用的带列表（None=旧路径）
+        capacity: 自适应容量 k（自适应路径）
+        active_bands: 攻击后仍存活的活动带数（自适应路径）
     """
     watermarked: bool
     uid: Optional[int]
@@ -85,6 +97,11 @@ class TraceResult:
     n_dict_words: int = 0
     soft_uid: Optional[int] = None
     soft_gap: float = -1.0
+    codec_mode: str = "default"
+    bands: List[int] = field(default_factory=list)
+    capacity: int = 0
+    n_bits: int = 0
+    active_bands: int = 0
 
 
 # ----------------------------------------------------------------------
@@ -95,10 +112,17 @@ class TraceResult:
 class DetectionThresholds:
     """检测阈值配置。
 
-    存在性判定策略：自适应阈值（基于词典命中数 n_dict_words）。
+    存在性判定策略（default 模式，min_n=2 统计）：
     - null 分布的 Σ|z| 期望 ≈ √(n_bands) × √(n/4)（每带 n/bands 个词的随机游走）
     - 水印文本的 Σ|z| 显著高于此
     - 阈值 = max(fixed_floor, adaptive_factor × √(n_dict_words))
+
+    自适应路径（zero_cost/hybrid + bands 元数据，min_n=1 统计）：
+    - n=1 带的 |z| 恒为 1（null 与 marked 相同），Σ|z| 随活动带数 m
+      近似线性增长，√n_dict 公式失效
+    - 阈值 = adaptive_intercept + adaptive_slope × m（活动带数）
+    - 默认常数来自 docs 语料实测（null 线性拟合 + 2.5σ 余量）；
+      生产部署应传 calibrate_corpus 自动标定（更准）
     """
     # 自适应系数：阈值 = adaptive_factor × √(n_dict_words)
     # null 经验值系数 ~1.0-1.5，水印 ~2.5-4.0，取 2.0 做保守分界
@@ -109,6 +133,10 @@ class DetectionThresholds:
     confidence_scale: float = 40.0
     # 注册库最近邻匹配最大汉明距
     max_hamming: int = 3
+    # 自适应路径（min_n=1 统计）线性阈值：intercept + slope × 活动带数
+    # 实测依据：p0 标定后 null Σ|z| ≈ 1.0-1.1/带，marked ≈ 2.0+/带
+    adaptive_intercept: float = 1.0
+    adaptive_slope: float = 1.6
 
 
 # ----------------------------------------------------------------------
@@ -126,6 +154,11 @@ class Watermarker:
         wm = Watermarker()
         result = wm.embed(text, user_id=42)
 
+        # 中文零感模式（推荐用于中文生产场景）
+        wm = Watermarker(keystore=ks, language="zh", codec_mode="zero_cost")
+        result = wm.embed(text, user_id=42)
+        # 发布 result.watermarked_text，存档 result.bands + session_salt
+
         # 带注册库 + 持久化密钥
         wm = Watermarker(
             keystore=KeyStore.from_file("key.json", create=True),
@@ -142,7 +175,18 @@ class Watermarker:
         registry: Optional[UIDRegistry] = None,
         language: str = "auto",
         thresholds: Optional[DetectionThresholds] = None,
+        codec_mode: str = "default",
+        supplementary_dict: Optional[Dict[str, List[str]]] = None,
+        calibrate_corpus: Optional[List[str]] = None,
     ) -> None:
+        """Args:
+            codec_mode: 中文 codec 模式。
+                "default"  — 全词林 GreenlistCodec（旧行为，向后兼容）
+                "zero_cost"— 零感词典（149 组高自然替换，推荐）
+                "hybrid"   — 零感打底 + supplementary_dict 补带
+            supplementary_dict: hybrid 模式的补充词典 {组名: [词列表]}
+            calibrate_corpus: 无水印参考语料，构建 codec 时标定 p0
+        """
         # 密钥
         if keystore is not None:
             self._keystore = keystore
@@ -162,8 +206,84 @@ class Watermarker:
         # 阈值
         self._thresholds = thresholds or DetectionThresholds()
 
+        # codec 模式与配置
+        if codec_mode not in ("default", "zero_cost", "hybrid"):
+            raise ValueError(f"未知 codec_mode: {codec_mode!r} "
+                             "(可选 default/zero_cost/hybrid)")
+        self._codec_mode = codec_mode
+        self._supplementary_dict = supplementary_dict
+        self._calibrate_corpus = calibrate_corpus
+
         # p0 标定缓存：{language_tag: bool}
         self._p0_calibrated: Dict[bytes, bool] = {}
+
+        # null 存在性模型（自适应路径阈值标定）：
+        # (每带均值 ratio, 阈值 ratio) — Σ|z|/m ≈ ratio·N(μ, σ)
+        # 阈值 = m × (μ + 2.5σ)。m = 活动带数。
+        # 仅当提供 calibrate_corpus 且中文自适应模式时计算
+        self._null_model: Optional[Tuple[float, float]] = None
+        if calibrate_corpus and codec_mode != "default":
+            self._fit_null_model(calibrate_corpus)
+
+    def _fit_null_model(self, corpus: List[str]) -> None:
+        """在 null 语料上拟合存在性阈值模型（自适应路径专用）。
+
+        每带归一化 ratio 模型：对每篇 null 文本用多个不同 salt 的
+        codec 检测（min_n=1），收集每带平均得分 r = Σ|z|/m（m=活动带数），
+        阈值 ratio = μ_r + 2.5·σ_r，判定阈值 = m × 阈值 ratio。
+
+        两个关键点：
+        - 多 salt 采样：绿名单颜色随 salt 重排，null 得分的 salt 间
+          方差远大于语料间残差——单 salt 拟合严重低估 σ。
+        - ratio 归一化：每带均值跨 m 稳定，避免线性回归在标定语料
+          m 散布窄时外推失稳（实测线性模型 FP 1/30~13/30，
+          ratio 模型 0/30 且 marked/null ratio 分离 4 倍以上）。
+        """
+        ratios: List[float] = []
+        for _ in range(5):  # 5 个 salt：σ 覆盖 salt 间方差
+            codec = self._build_codec(generate_session_salt(), b"zh")
+            for t in corpus:
+                rep = codec.detect(t, min_n=1)
+                m = sum(1 for st in rep.bands if st.has_signal)
+                if m > 0:
+                    ratios.append(rep.existence_score / m)
+        if len(ratios) < 3:
+            return
+        n = len(ratios)
+        mu = sum(ratios) / n
+        sd = (sum((r - mu) ** 2 for r in ratios) / n) ** 0.5
+        if sd < 1e-9:
+            sd = 0.1  # 完全同质语料：给保守余量
+        # 3σ（非 2.5σ）：标定语料有限时 σ 本身仍是低估的，
+        # 且 marked/null ratio 分离 4 倍以上，宽阈值无漏检代价
+        self._null_model = (mu, mu + 3.0 * sd)
+
+    # ------------------------------------------------------------------
+    # codec 构建
+    # ------------------------------------------------------------------
+
+    def _build_codec(self, session_salt: bytes, lang_tag: bytes) -> GreenlistCodec:
+        """按 codec_mode 与语言构建 codec。
+
+        default 模式或英文 → 旧 GreenlistCodec 默认构造（向后兼容）；
+        zero_cost/hybrid + 中文 → 零感/混合 codec。
+        """
+        if lang_tag != b"zh" or self._codec_mode == "default":
+            return GreenlistCodec(self._master_key, session_salt,
+                                  language_tag=lang_tag)
+        if self._codec_mode == "zero_cost":
+            from ..greenlist import build_zero_cost_zh_codec
+            return build_zero_cost_zh_codec(
+                self._master_key, session_salt,
+                calibrate_corpus=self._calibrate_corpus)
+        # hybrid
+        if self._supplementary_dict is None:
+            raise ValueError("hybrid 模式需要 supplementary_dict")
+        from ..greenlist import build_hybrid_zh_codec
+        return build_hybrid_zh_codec(
+            self._master_key, session_salt,
+            supplementary_dict=self._supplementary_dict,
+            calibrate_corpus=self._calibrate_corpus)
 
     # ------------------------------------------------------------------
     # 工厂方法
@@ -175,6 +295,9 @@ class Watermarker:
         key_file: Optional[str] = None,
         registry_file: Optional[str] = None,
         language: str = "auto",
+        codec_mode: str = "default",
+        supplementary_dict: Optional[Dict[str, List[str]]] = None,
+        calibrate_corpus: Optional[List[str]] = None,
     ) -> "Watermarker":
         """从配置文件创建（便捷方法）。
 
@@ -182,10 +305,15 @@ class Watermarker:
             key_file: 密钥文件路径（不存在则自动创建）
             registry_file: 注册库文件路径（None=纯内存）
             language: 默认语言 "en"/"zh"/"auto"
+            codec_mode: 中文 codec 模式（default/zero_cost/hybrid）
+            supplementary_dict: hybrid 模式补充词典
+            calibrate_corpus: p0 标定语料
         """
         ks = KeyStore.from_file(key_file, create=True) if key_file else KeyStore()
         reg = UIDRegistry(backend="file", path=registry_file) if registry_file else UIDRegistry()
-        return cls(keystore=ks, registry=reg, language=language)
+        return cls(keystore=ks, registry=reg, language=language,
+                   codec_mode=codec_mode, supplementary_dict=supplementary_dict,
+                   calibrate_corpus=calibrate_corpus)
 
     # ------------------------------------------------------------------
     # 嵌入
@@ -201,6 +329,7 @@ class Watermarker:
         language: Optional[str] = None,
         bias: float = 1.0,
         rng_seed: Optional[int] = None,
+        n_bits: Optional[int] = None,
     ) -> EmbedResult:
         """嵌入水印。
 
@@ -212,6 +341,12 @@ class Watermarker:
             language: 语言覆盖（None→用实例默认 / auto 检测）
             bias: 嵌入强度（1.0=全词参与，<1.0=随机跳过换低偏移）
             rng_seed: 随机种子（None=不固定；指定后同 text+salt+uid+seed 确定性嵌入）
+            n_bits: 自适应模式编码位数（None=满容量 k；<k 留冗余带抗替换）
+
+        自适应模式（zero_cost/hybrid + 中文）注意：
+            UID 实际编码在 n_bits 位空间——user_id 超出时取低 n_bits 位
+            （容量自适应的固有约束；检测时注册库候选同样按低 n_bits 位匹配）。
+            result.bands 必须存档，trace 时传入。
 
         Returns:
             EmbedResult
@@ -224,21 +359,69 @@ class Watermarker:
         lang_tag = b"zh" if lang == "zh" else b"en"
 
         # 3. 盐
+        salt_fixed = session_salt is not None
         if session_salt is None:
             session_salt = generate_session_salt()
 
-        # 4. 信道 B 嵌入
-        codec = GreenlistCodec(self._master_key, session_salt, language_tag=lang_tag)
         rng = None
         if rng_seed is not None:
             import random
             rng = random.Random(rng_seed)
-        marked = codec.embed(text, uid, bias=bias, rng=rng)
 
-        # 5. 自检
-        report = codec.detect(marked)
+        # 4. 信道 B 嵌入（中文 + zero_cost/hybrid → 自适应路径）
+        codec = self._build_codec(session_salt, lang_tag)
+        adaptive = lang_tag == b"zh" and self._codec_mode != "default"
 
-        # 6. 信道 A 签名（可选）
+        if adaptive:
+            # 自检重试（自动盐时换 salt，组颜色+带映射全变）：
+            # 1) UID 回验：某词的唯一异色候选可能 boundary unsafe
+            #    （如 "不但"+"是" 拼成 "但是"），颜色无法翻转 → 单带误码
+            # 2) 信号余量：稀疏文本（每带 1-2 词）z 饱和，marked 得分
+            #    可能贴着存在性阈值 → trace 随机漏检。salt 间信号方差
+            #    巨大（实测同文本 8.5 vs 30.9），挑信号强的盐。
+            # 通过标准：UID 正确 且 得分 ≥ 1.5×阈值；全部尝试不达标
+            # 时返回余量最大的一次（UID 正确优先）。
+            # 固定盐时只能换 rng 流（帮助多候选池，单候选无解）。
+            # 注意容量随 salt 变化（活动带集不同），每次尝试须重算。
+            max_attempts = 4
+            # (honor, uid_ok, margin, marked, bands, report, salt, codec, eff_bits, k)
+            # honor = 满足请求的 n_bits（显式请求时要求 k >= n_bits）——
+            # 换盐重试会让容量缩水（如 15→11），若直接按满容量钳位会
+            # 悄悄吞掉用户要的冗余带。显式 n_bits 下优先选能兑现的盐。
+            best = None
+            for attempt in range(max_attempts):
+                k = codec.capacity(text)
+                honor = n_bits is None or k >= n_bits
+                eff_bits = n_bits if (honor and n_bits is not None) else k
+                uid_eff = uid & ((1 << eff_bits) - 1) if eff_bits < 16 else uid
+                marked, bands = codec.embed_adaptive(
+                    text, uid_eff, n_bits=eff_bits, bias=bias, rng=rng)
+                uid_chk, _, report = codec.detect_adaptive(marked, bands, min_n=1)
+                threshold = self._compute_threshold_adaptive(report)
+                margin = report.existence_score / threshold if threshold > 0 else float("inf")
+                uid_ok = uid_chk == uid_eff
+                cand = (honor, uid_ok, margin, marked, bands, report,
+                        session_salt, codec, eff_bits, k)
+                if best is None or (honor, uid_ok, margin) > (best[0], best[1], best[2]):
+                    best = cand
+                if honor and uid_ok and margin >= 1.5:
+                    break
+                if attempt < max_attempts - 1:
+                    if not salt_fixed:
+                        session_salt = generate_session_salt()
+                        codec = self._build_codec(session_salt, lang_tag)
+                    if rng_seed is not None:
+                        import random
+                        rng = random.Random(rng_seed + attempt + 1)
+                    else:
+                        rng = None
+            _, _, _, marked, bands, report, session_salt, _, eff_bits, k = best
+        else:
+            marked = codec.embed(text, uid, bias=bias, rng=rng)
+            report = codec.detect(marked)
+            bands, eff_bits, k = [], 0, 0
+
+        # 5. 信道 A 签名（可选）
         seal = None
         if sign:
             binder = DocumentBinder(self._master_key, session_salt)
@@ -253,6 +436,10 @@ class Watermarker:
             language=lang,
             n_dict_words=report.n_dict_words,
             existence_score=report.existence_score,
+            codec_mode=self._codec_mode if adaptive else "default",
+            bands=list(bands),
+            capacity=k,
+            n_bits=eff_bits,
         )
 
     # ------------------------------------------------------------------
@@ -269,6 +456,8 @@ class Watermarker:
         soft_match: bool = False,
         match_margin: float = 2.0,
         match_margin_ratio: Optional[float] = None,
+        bands: Optional[List[int]] = None,
+        n_bits: Optional[int] = None,
     ) -> TraceResult:
         """溯源：存在性检测 + UID 解码 + 注册库匹配 + 篡改判定。
 
@@ -295,6 +484,9 @@ class Watermarker:
                 稳定 ≈0.22，正确匹配均值 0.5~0.7，但重度攻击下分布重叠：
                 ratio 是"宁可 abstain 也不错"的权衡旋钮（ratio=0.5 时
                 s50/pku 错误清零，s30 召回 19→8）。None 时纯绝对阈值。
+            bands: 嵌入时保存的带集元数据（自适应路径）。传入时走
+                detect_adaptive/soft_match_adaptive（k-bit 空间）。
+            n_bits: 嵌入时的编码位数（含冗余）。None 时用 len(bands)。
 
         Returns:
             TraceResult
@@ -302,37 +494,62 @@ class Watermarker:
         lang = self._resolve_language(text, language)
         lang_tag = b"zh" if lang == "zh" else b"en"
 
-        # 信道 B 检测
-        codec = GreenlistCodec(self._master_key, session_salt or generate_session_salt(),
-                                language_tag=lang_tag)
-        report = codec.detect(text)
+        salt = session_salt or generate_session_salt()
+        codec = self._build_codec(salt, lang_tag)
+        adaptive = bands is not None
 
-        # 存在性判定：自适应阈值
-        threshold = self._compute_threshold(report.n_dict_words)
+        # 信道 B 检测
+        if adaptive:
+            uid_dec, active, report = codec.detect_adaptive(text, bands)
+            capacity = len(bands)
+            eff_bits = n_bits if n_bits is not None else capacity
+        else:
+            report = codec.detect(text)
+            uid_dec = report.uid
+            active, capacity, eff_bits = [], 0, 0
+
+        # 存在性判定：自适应阈值（自适应路径用带数线性模型）
+        if adaptive:
+            threshold = self._compute_threshold_adaptive(report)
+        else:
+            threshold = self._compute_threshold(report.n_dict_words)
         watermarked = report.existence_score >= threshold
 
         # UID 解码 + 注册库匹配
-        uid = report.uid if watermarked else None
+        uid = uid_dec if watermarked else None
         user = None
         hamming_dist = -1
         soft_uid: Optional[int] = None
         soft_gap = -1.0
 
         if self._registry is not None and len(self._registry) > 0:
+            reg_uids = list(self._registry.list_all())
             if soft_match:
                 # 软判决路径：直接对注册库候选打分（min_n=1，利用弱证据带）。
                 # 注意：soft_match 是"候选区分器"，null 文本也可能与某候选
                 # 方向对齐（z 随机游走）——存在性必须由 watermarked 门控。
-                soft_uid, best_score, soft_gap = codec.soft_match(
-                    text,
-                    list(self._registry.list_all()),
-                    min_n=1,
-                    margin=match_margin,
-                    margin_ratio=match_margin_ratio,
-                )
-                if watermarked and soft_uid is not None:
-                    uid = soft_uid
-                    user = self._registry.lookup(uid)
+                if adaptive:
+                    # k-bit 空间：注册库 UID 按低 eff_bits 位映射
+                    mask = (1 << eff_bits) - 1
+                    k_cands = sorted({u & mask for u in reg_uids})
+                    soft_uid, best_score, soft_gap = codec.soft_match_adaptive(
+                        text, k_cands, bands,
+                        min_n=1, margin=match_margin,
+                        margin_ratio=match_margin_ratio)
+                    if watermarked and soft_uid is not None:
+                        uid = soft_uid
+                        # k-bit → 注册库 16-bit UID（取低 n_bits 位匹配的注册项）
+                        user = self._lookup_masked(soft_uid, reg_uids, mask)
+                else:
+                    soft_uid, best_score, soft_gap = codec.soft_match(
+                        text, reg_uids,
+                        min_n=1,
+                        margin=match_margin,
+                        margin_ratio=match_margin_ratio,
+                    )
+                    if watermarked and soft_uid is not None:
+                        uid = soft_uid
+                        user = self._registry.lookup(uid)
             elif watermarked and uid is not None:
                 match = self._registry.nearest_match(
                     uid, max_hamming=self._thresholds.max_hamming)
@@ -369,7 +586,19 @@ class Watermarker:
             n_dict_words=report.n_dict_words,
             soft_uid=soft_uid,
             soft_gap=soft_gap,
+            codec_mode=self._codec_mode if adaptive else "default",
+            bands=list(bands) if bands else [],
+            capacity=capacity,
+            n_bits=eff_bits if adaptive else 0,
+            active_bands=len(active),
         )
+
+    def _lookup_masked(self, k_uid: int, reg_uids: List[int], mask: int) -> Optional[str]:
+        """k-bit UID → 注册库用户（低 n_bits 位匹配；多位命中取最小 UID）。"""
+        hits = [u for u in reg_uids if (u & mask) == k_uid]
+        if not hits:
+            return None
+        return self._registry.lookup(min(hits))
 
     # ------------------------------------------------------------------
     # 便捷方法
@@ -396,7 +625,7 @@ class Watermarker:
         lang = self._resolve_language(text, language)
         lang_tag = b"zh" if lang == "zh" else b"en"
         salt = session_salt or generate_session_salt()
-        codec = GreenlistCodec(self._master_key, salt, language_tag=lang_tag)
+        codec = self._build_codec(salt, lang_tag)
         report = codec.detect(text)
         threshold = self._compute_threshold(report.n_dict_words)
         return report.existence_score >= threshold
@@ -405,7 +634,13 @@ class Watermarker:
         """在无水印参考语料上标定 p0（提升检测精度）。
 
         部署时用一批真实无水印文本调一次即可。
+        注意：zero_cost/hybrid 模式应通过构造参数 calibrate_corpus
+        传入语料（构建时逐 codec 标定），本方法仅作用于 default 模式。
         """
+        if self._codec_mode != "default" and language == "zh":
+            # zero_cost/hybrid 的 p0 在 _build_codec 时标定
+            self._calibrate_corpus = corpus
+            return
         lang_tag = b"zh" if language == "zh" else b"en"
         codec = GreenlistCodec(self._master_key, generate_session_salt(), language_tag=lang_tag)
         codec.calibrate_p0(corpus)
@@ -451,3 +686,16 @@ class Watermarker:
         import math
         adaptive = self._thresholds.adaptive_factor * math.sqrt(max(n_dict_words, 1))
         return max(self._thresholds.existence_floor, adaptive)
+
+    def _compute_threshold_adaptive(self, report: BandReport) -> float:
+        """自适应路径（zero_cost/hybrid，min_n=1 统计）的存在性阈值。
+
+        优先用 null 语料标定的每带 ratio 模型（阈值 = m × 阈值 ratio，
+        m = 活动带数），未标定时用 DetectionThresholds 的默认线性常数。
+        """
+        m = sum(1 for st in report.bands if st.has_signal)
+        if self._null_model is not None:
+            _, thr_ratio = self._null_model
+            return m * thr_ratio
+        return (self._thresholds.adaptive_intercept
+                + self._thresholds.adaptive_slope * m)

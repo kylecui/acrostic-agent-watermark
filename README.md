@@ -100,6 +100,41 @@ resp = client.chat.completions.create(..., user_id="user-alice")
 
 > 详见 [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md)
 
+### v0.7 中文零感水印（codec 模式）
+
+中文场景默认 `zero_cost` 模式（词典小、嵌入对文本观感几乎无扰动）；需要更大容量时用 `hybrid` 或 `default`：
+
+```python
+from aawm.plugins import Watermarker
+
+# 零感模式 + null 语料标定（显著降低误报）
+wm = Watermarker(codec_mode="zero_cost",
+                 calibrate_corpus=["正常输出文本1", "正常输出文本2", ...])
+
+result = wm.embed(agent_output, user_id=42)
+# 发布 result.watermarked_text；存档 session_salt + bands + n_bits
+# （trace 时三者回传，缺 bands 会退化到 default 阈值，检测口径不同）
+
+trace = wm.trace(suspect_text,
+                 session_salt=result.session_salt,
+                 bands=result.bands,
+                 n_bits=result.n_bits)
+if trace.watermarked:
+    print(f"泄露源自用户 {trace.user or trace.uid}  "
+          f"(存活带 {trace.active_bands}/{trace.capacity})")
+```
+
+标定语料是**未加水印的正常输出**（几十篇即可）。CLI 等价命令：
+
+```bash
+aawm embed input.txt --key key.json --user 42 \
+      --codec-mode zero_cost --calibrate-corpus ./corpus/ -o marked.txt
+aawm trace marked.txt --key key.json --meta marked.txt.meta.json \
+      --codec-mode zero_cost --calibrate-corpus ./corpus/
+```
+
+> 容量 < 用户 UID 位数时，解码 UID 为低位截断值（如 42 → 0x000A），这是 k-bit 语义，配合注册库 `--registry` 的 soft_match 可映射回全宽 UID。
+
 ### v0.4 核心算法 API（底层）
 
 核心 API（v0.4 内容寻址 + 句子感知，推荐）：
@@ -142,6 +177,16 @@ v0.2 API（`Embedder` / `Decoder`，位置索引锚点）仍可用，供对比�
 
 ## 项目状态
 
+✅ **v0.7 中文零感 / 混合词典模式（266 项测试通过）**：
+- **三种 codec 模式**：`default`（全词林，向后兼容）/ `zero_cost`（零感词典）/ `hybrid`（零感打底 + 补充词表补带）
+- **零感词典**：75 组常用双字词（"不仅→不但/不只/不只是"），嵌入对文本观感几乎无扰动
+- **自适应编解码**：`embed_adaptive / detect_adaptive / soft_match_adaptive`，容量按文本活动词自动伸缩
+- **k-bit 容量语义**：UID 编码在 `n_bits` 位空间，容量不足时取低 `n_bits` 位（配合注册库 soft_match 映射回全宽 UID）
+- **embed 自检重试**：嵌入后回验解码 UID + 信号余量 ≥1.5×阈值，自动换盐挑选强信号
+- **null 语料标定**：`--calibrate-corpus` 用每带 ratio 模型（Σ|z|/m）5-salt 3σ 拟合 null 阈值，显著降低误报
+- **CLI / HTTP 端到端**：meta.json 携带 `bands/n_bits/capacity`，trace 时回传即可精确溯源
+- **测试覆盖**：Facade 级 e2e（往返/冗余/标定/注册库 soft_match）+ server 级自适应往返
+
 ✅ **v0.6 通用 Agent 插件已实现（204 项测试通过）**：
 - **Watermarker Facade**：统一 API 封装 GreenlistCodec + DocumentBinder + UIDRegistry
 - **Fail-open 中间件**：任何嵌入异常 → 透传原始文本，绝不阻断 Agent 响应
@@ -179,7 +224,7 @@ v0.2 API（`Embedder` / `Decoder`，位置索引锚点）仍可用，供对比�
 ```
 acrostic-agent-watermark/
 ├── README.md                  # 本文件
-├── pyproject.toml             # 包配置（v0.6.0，含 CLI entry point）
+├── pyproject.toml             # 包配置（v0.7.0，含 CLI entry point）
 ├── docs/
 │   ├── research_notes.md      # 起步研究：领域扫描、相关工作、差异化定位
 │   ├── design.md              # 设计文档：架构、算法、威胁模型、v0.2-v0.5
@@ -190,10 +235,12 @@ acrostic-agent-watermark/
 │   └── capability_examples.md # 双语能力边界示例
 ├── src/
 │   └── aawm/
-│       ├── __init__.py        # v0.6.0，lazy-loading 插件符号
+│       ├── __init__.py        # v0.7.0，lazy-loading 插件符号
 │       ├── keys.py            # 密钥派生（HKDF-SHA256）
 │       ├── coding.py          # 信道编码：CRC-8 / 重复码 / 交织重复码 / 汉明(7,4)
-│       ├── greenlist.py       # 绿名单编解码器（信道B：16 带统计溯源）
+│       ├── greenlist.py       # 绿名单编解码器（信道B：16 带统计溯源；自适应路径）
+│       ├── collocation.py     # v0.7 搭配词约束（boundary_safe 边界稳定性）
+│       ├── data/zh_zero_cost.json  # v0.7 零感词典（75 组双字词）
 │       ├── binding.py         # DocumentBinder（信道A：Merkle-HMAC 段落绑定）
 │       ├── content.py         # 内容寻址锚点 + 句子边界感知
 │       ├── cli.py             # v0.6 CLI 工具（keygen/registry/embed/trace/serve）

@@ -113,6 +113,39 @@ class TestCLI:
                 return
         assert False, f"embed+trace roundtrip failed after 5 attempts\n{result.stdout}\n{result.stderr}"
 
+    def test_embed_trace_adaptive_roundtrip(self, tmp_path):
+        """zero_cost/hybrid 模式 CLI 端到端（--codec-mode + --calibrate-corpus）。"""
+        from tests.test_e2e_integration import _long_zh_text
+
+        key_file = tmp_path / "key.json"
+        self._run_cli("keygen", "--output", str(key_file))
+        input_file = tmp_path / "input.txt"
+        input_file.write_text(_long_zh_text(), encoding="utf-8")
+        supp_file = tmp_path / "supp.json"
+        supp_file.write_text(json.dumps(
+            {"这个": ["此个", "这一"], "因为": ["由于"], "所以": ["因此"]},
+            ensure_ascii=False), encoding="utf-8")
+
+        for mode, extra in (("zero_cost", []),
+                            ("hybrid", ["--supplementary-dict", str(supp_file)])):
+            output_file = tmp_path / f"marked_{mode}.txt"
+            result = self._run_cli(
+                "embed", str(input_file), "--key", str(key_file),
+                "--user", "42", "--codec-mode", mode, *extra,
+                "-o", str(output_file))
+            assert result.returncode == 0, result.stderr
+            meta_file = output_file.with_suffix(".meta.json")
+            assert meta_file.exists()
+            meta = json.loads(meta_file.read_text(encoding="utf-8"))
+            assert meta["codec_mode"] == mode
+            assert meta["bands"], f"{mode} 应返回 bands"
+
+            result = self._run_cli(
+                "trace", str(output_file), "--key", str(key_file),
+                "--meta", str(meta_file), "--codec-mode", mode, *extra)
+            assert result.returncode == 0, result.stderr
+            assert "检出水印: 是" in result.stdout
+
     def test_embed_trace_stdin(self, tmp_path):
         key_file = tmp_path / "key.json"
         self._run_cli("keygen", "--output", str(key_file))
@@ -121,8 +154,7 @@ class TestCLI:
             "embed", "-",
             "--key", str(key_file),
             "--user", "42",
-            input_text=LONG_TEXT,
-        )
+            input_text=LONG_TEXT,        )
         assert result.returncode == 0
         marked_text = result.stdout
         # trace via stdin（需要 salt，先从 stderr 拿不到，直接传文本）
@@ -211,5 +243,43 @@ class TestServer:
             assert "watermarked_text" in data
             assert "session_salt" in data
             assert data["user_id"] == 42
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_embed_trace_adaptive_roundtrip(self, app_client):
+        """zero_cost 模式经 server API 的端到端往返（bands/n_bits 回传）。"""
+        from aawm.plugins import Watermarker
+        from aawm.server.api import set_watermarker
+        from tests.test_e2e_integration import _long_zh_text
+
+        wm = Watermarker(codec_mode="zero_cost")
+        set_watermarker(wm)
+
+        _, client = app_client
+        try:
+            resp = await client.post("/v1/embed", json={
+                "text": _long_zh_text(),
+                "user_id": 42,
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["codec_mode"] == "zero_cost"
+            assert data["bands"], "自适应模式应返回 bands"
+            assert data["n_bits"] >= 1
+
+            resp2 = await client.post("/v1/trace", json={
+                "text": data["watermarked_text"],
+                "session_salt": data["session_salt"],
+                "bands": data["bands"],
+                "n_bits": data["n_bits"],
+            })
+            assert resp2.status_code == 200
+            t = resp2.json()
+            assert t["watermarked"] is True
+            assert t["codec_mode"] == "zero_cost"
+            assert t["active_bands"] >= 1
+            assert t["n_bits"] == data["n_bits"]
+            assert t["uid"] == 42 & ((1 << data["n_bits"]) - 1)
         finally:
             await client.aclose()

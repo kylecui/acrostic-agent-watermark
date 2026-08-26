@@ -111,7 +111,7 @@ def _cmd_embed(args: argparse.Namespace) -> int:
     # 加载注册库
     reg = UIDRegistry(backend="file", path=args.registry) if args.registry else None
     # 创建 Watermarker
-    wm = Watermarker(keystore=ks, registry=reg, language=args.language or "auto")
+    wm = _make_watermarker(args, ks, reg)
 
     # 读取输入文本
     text = _read_input(args.input)
@@ -120,7 +120,8 @@ def _cmd_embed(args: argparse.Namespace) -> int:
     user_id = _parse_user_id(args.user)
 
     # 嵌入
-    result = wm.embed(text, user_id=user_id, sign=not args.no_sign)
+    result = wm.embed(text, user_id=user_id, sign=not args.no_sign,
+                      n_bits=args.n_bits)
 
     # 输出
     if args.output:
@@ -133,6 +134,10 @@ def _cmd_embed(args: argparse.Namespace) -> int:
             "user_alias": result.user_alias,
             "has_seal": result.seal is not None,
             "existence_score": result.existence_score,
+            "codec_mode": result.codec_mode,
+            "bands": result.bands,
+            "capacity": result.capacity,
+            "n_bits": result.n_bits,
         }
         if result.seal:
             meta["seal"] = {
@@ -143,12 +148,15 @@ def _cmd_embed(args: argparse.Namespace) -> int:
             }
         meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"水印文本已保存到 {args.output}")
-        print(f"元数据（salt+seal）已保存到 {meta_file}")
+        print(f"元数据（salt+seal+bands）已保存到 {meta_file}")
     else:
         print(result.watermarked_text)
 
     print(f"\n[统计] UID=0x{result.user_id:04X}, 词典命中={result.n_dict_words}, "
           f"存在性={result.existence_score:.1f}", file=sys.stderr)
+    if result.codec_mode != "default":
+        print(f"[自适应] 模式={result.codec_mode}, 容量={result.capacity} bit, "
+              f"编码={result.n_bits} bit, bands={result.bands}", file=sys.stderr)
     return 0
 
 
@@ -159,13 +167,15 @@ def _cmd_embed(args: argparse.Namespace) -> int:
 def _cmd_trace(args: argparse.Namespace) -> int:
     ks = KeyStore.from_any(key_file=args.key, master_key=args.key_hex)
     reg = UIDRegistry(backend="file", path=args.registry) if args.registry else None
-    wm = Watermarker(keystore=ks, registry=reg, language=args.language or "auto")
+    wm = _make_watermarker(args, ks, reg)
 
     text = _read_input(args.input)
 
     # 加载 salt 和 seal
     session_salt = None
     seal = None
+    bands = None
+    n_bits = None
     if args.salt:
         session_salt = bytes.fromhex(args.salt)
     if args.meta:
@@ -180,8 +190,12 @@ def _cmd_trace(args: argparse.Namespace) -> int:
                 aad=bytes.fromhex(meta["seal"]["aad"]),
                 version=meta["seal"]["version"],
             )
+        if meta.get("bands"):
+            bands = list(meta["bands"])
+            n_bits = meta.get("n_bits")
 
-    trace = wm.trace(text, session_salt=session_salt, seal=seal)
+    trace = wm.trace(text, session_salt=session_salt, seal=seal,
+                     bands=bands, n_bits=n_bits)
 
     # 输出
     print(f"检出水印: {'是' if trace.watermarked else '否'}")
@@ -194,6 +208,8 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     print(f"置信度: {trace.confidence:.2f}")
     print(f"存在性得分: {trace.existence_score:.1f}")
     print(f"词典命中: {trace.n_dict_words}")
+    if bands:
+        print(f"自适应: 容量={trace.capacity} bit, 存活带={trace.active_bands}/{len(bands)}")
     if trace.tampered is not None:
         print(f"篡改判定: {'是' if trace.tampered else '否'}")
         if trace.tampered_paragraphs:
@@ -214,7 +230,7 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
     ks = KeyStore.from_any(key_file=args.key, master_key=args.key_hex)
     reg = UIDRegistry(backend="file", path=args.registry) if args.registry else None
-    wm = Watermarker(keystore=ks, registry=reg)
+    wm = _make_watermarker(args, ks, reg)
 
     # 把 watermarker 注入 server 模块
     from .server.api import create_app, set_watermarker
@@ -229,6 +245,47 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------------
 # 内部工具
 # ----------------------------------------------------------------------
+
+def _make_watermarker(args: argparse.Namespace, ks, reg) -> Watermarker:
+    """按 CLI 参数构建 Watermarker（codec_mode / 标定语料 / 补充词典）。"""
+    kwargs = {}
+    codec_mode = getattr(args, "codec_mode", None) or "default"
+    if codec_mode != "default":
+        kwargs["codec_mode"] = codec_mode
+    calib_path = getattr(args, "calibrate_corpus", None)
+    if calib_path:
+        # 标定语料：目录（全部 .txt/.md）或单文件（UTF-8 文本）
+        p = Path(calib_path)
+        if p.is_dir():
+            corpus = []
+            for f in sorted(p.glob("*.txt")) + sorted(p.glob("*.md")):
+                corpus.append(f.read_text(encoding="utf-8"))
+        else:
+            corpus = [p.read_text(encoding="utf-8")]
+        kwargs["calibrate_corpus"] = corpus
+    supp_path = getattr(args, "supplementary_dict", None)
+    if supp_path:
+        # 补充词典：JSON 文件 {词: [同义词, ...]}
+        import json as _json
+        kwargs["supplementary_dict"] = _json.loads(
+            Path(supp_path).read_text(encoding="utf-8"))
+    return Watermarker(keystore=ks, registry=reg,
+                       language=getattr(args, "language", None) or "auto",
+                       **kwargs)
+
+
+def _add_codec_options(parser: argparse.ArgumentParser) -> None:
+    """embed/trace/serve 共用的 codec 选项。"""
+    parser.add_argument("--codec-mode", choices=["default", "zero_cost", "hybrid"],
+                        default="default",
+                        help="中文 codec 模式（default=全词林旧行为；"
+                             "zero_cost=零感词典（推荐，高自然）；"
+                             "hybrid=零感+补充词典（配 --supplementary-dict））")
+    parser.add_argument("--calibrate-corpus", dest="calibrate_corpus",
+                        help="p0/null 标定语料（目录或文件路径）")
+    parser.add_argument("--supplementary-dict", dest="supplementary_dict",
+                        help="补充词典 JSON（hybrid 模式用）：{词: [同义词, ...]}")
+
 
 def _make_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -265,6 +322,10 @@ def _make_parser() -> argparse.ArgumentParser:
     p_embed.add_argument("--language", choices=["en", "zh", "auto"], help="语言")
     p_embed.add_argument("--no-sign", action="store_true", help="不签信道 A")
     p_embed.add_argument("--output", "-o", help="输出文件路径")
+    p_embed.add_argument("--n-bits", dest="n_bits", type=int, default=None,
+                         help="自适应模式编码位数（默认满容量；"
+                              "小于容量时留冗余带抗替换攻击）")
+    _add_codec_options(p_embed)
 
     # trace
     p_trace = sub.add_parser("trace", help="溯源检测")
@@ -274,7 +335,8 @@ def _make_parser() -> argparse.ArgumentParser:
     p_trace.add_argument("--registry", help="注册库文件路径")
     p_trace.add_argument("--language", choices=["en", "zh", "auto"], help="语言")
     p_trace.add_argument("--salt", help="会话盐（hex）")
-    p_trace.add_argument("--meta", help="元数据文件（含 salt+seal 的 JSON）")
+    p_trace.add_argument("--meta", help="元数据文件（含 salt+seal+bands 的 JSON）")
+    _add_codec_options(p_trace)
 
     # serve
     p_serve = sub.add_parser("serve", help="启动检测服务")
@@ -283,6 +345,7 @@ def _make_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--registry", help="注册库文件路径")
     p_serve.add_argument("--port", type=int, default=8765, help="监听端口")
     p_serve.add_argument("--log-level", default="info", help="日志级别")
+    _add_codec_options(p_serve)
 
     return parser
 

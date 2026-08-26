@@ -27,12 +27,14 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Set
 
 _DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 
 _DEFAULT_ZH_CACHE: Optional[Dict[str, List[str]]] = None
 _DEFAULT_EN_CACHE: Optional[Dict[str, List[str]]] = None
+_ZERO_COST_ZH_CACHE: Optional[Dict[str, List[str]]] = None
+_ZERO_COST_BLOCK_CACHE: Optional[Set[str]] = None
 
 
 def _load_groups(filename: str) -> Optional[Dict[str, List[str]]]:
@@ -70,6 +72,77 @@ def load_default_en_dictionary() -> Dict[str, List[str]]:
             else {**EN_SYNONYMS_RAW, **EN_SYNONYMS_EXTRA}
         )
     return _DEFAULT_EN_CACHE
+
+# ---------------------------------------------------------------------------
+# 零感词典（用户方向性决策 2026-08-20：内容词同义替换被否，改用
+# 形态扩展 + 连词 + 高自然精选组做隐式编码）。数据文件由
+# experiments/gen_zero_cost_dict.py 生成；缺失时回退最小核心组。
+# 注意：单字组（和/与、或/或者...）的语素阻断词表不在此处——
+# 经 load_zero_cost_zh_block_words() 单独获取，构建 codec 时须把
+# 阻断词并入分词 dict_words（见 GreenlistCodec 的 zh 装配说明）。
+# ---------------------------------------------------------------------------
+
+_ZERO_COST_ZH_MINIMAL: Dict[str, List[str]] = {
+    "和": ["和", "与"],
+    "或": ["或", "或者"],
+    "但": ["但", "但是"],
+    "已": ["已", "已经"],
+    "曾": ["曾", "曾经"],
+    "刚": ["刚", "刚刚", "刚才"],
+    "仅": ["仅", "仅仅"],
+    "再": ["再", "再次"],
+    "因为": ["因为", "由于"],
+    "所以": ["所以", "因此"],
+    "然而": ["然而", "可是"],
+    "根据": ["根据", "依据", "按照"],
+    "非常": ["非常", "十分"],
+    "始终": ["始终", "一直"],
+    "逐渐": ["逐渐", "渐渐"],
+    "随着": ["随着", "伴随"],
+    "应该": ["应该", "应当"],
+    "可以": ["可以", "能够"],
+    "提高": ["提高", "提升", "增强"],
+    "检测": ["检测", "检验", "查验"],
+    "保持": ["保持", "维持", "保有"],
+    "提供": ["提供", "供给", "给予"],
+    "重要": ["重要", "关键", "紧要"],
+    "明显": ["明显", "显著", "突出"],
+    "准确": ["准确", "精确", "精准"],
+}
+
+
+def load_zero_cost_zh_dictionary() -> Dict[str, List[str]]:
+    """零感词典（形态扩展 + 连词 + 高自然精选组）。
+
+    数据文件缺失时回退 _ZERO_COST_ZH_MINIMAL（最小可用核心组）。
+    返回 {组首词: [全部词...]}，组键即语义代表、必在组内。
+    """
+    global _ZERO_COST_ZH_CACHE
+    if _ZERO_COST_ZH_CACHE is None:
+        path = os.path.join(_DATA_DIR, "zh_zero_cost.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+            _ZERO_COST_ZH_CACHE = {
+                ws[0]: ws for ws in payload["groups"] if len(ws) >= 2
+            }
+        else:
+            _ZERO_COST_ZH_CACHE = dict(_ZERO_COST_ZH_MINIMAL)
+    return _ZERO_COST_ZH_CACHE
+
+
+def load_zero_cost_zh_block_words() -> Set[str]:
+    """单字组语素阻断词表（只进分词 dict_words，不进任何组）。"""
+    global _ZERO_COST_BLOCK_CACHE
+    if _ZERO_COST_BLOCK_CACHE is None:
+        path = os.path.join(_DATA_DIR, "zh_zero_cost.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+            _ZERO_COST_BLOCK_CACHE = set(payload.get("block_words", []))
+        else:
+            _ZERO_COST_BLOCK_CACHE = set()
+    return _ZERO_COST_BLOCK_CACHE
 
 # ---------------------------------------------------------------------------
 # 英文原始词典（v0.2 的 _SYNONYMS_RAW 搬迁至此，内容不变）
