@@ -111,8 +111,11 @@ setup_hooks(watermarker, user_id="alice")   # crew.kickoff() 输出自动嵌水�
 > 所有适配器都是 **Fail-open**（嵌入失败绝不影响 agent 响应），且支持
 > `on_embed` 回调存档 session_salt——中间件嵌入模式下溯源的前提。
 > 低代码平台（Dify/Coze）接入方案见 agent 嵌入指南。
+> Claude Code / Codex / opencode / WorkBuddy / Antigravity / PI / Qwen Code
+> 等 CLI/IDE agent 是黑盒进程，只需把 base_url 指向本地代理网关即可零改造接入。
+> 见 [docs/cli_agent_proxy_guide.md](docs/cli_agent_proxy_guide.md)。
 
-> 详见 [docs/agent_embedding_guide.md](docs/agent_embedding_guide.md) | [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md)
+> 详见 [docs/agent_embedding_guide.md](docs/agent_embedding_guide.md) | [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md) | [docs/cli_agent_proxy_guide.md](docs/cli_agent_proxy_guide.md)
 
 ### v0.7 中文零感水印（codec 模式）
 

@@ -108,6 +108,7 @@ class WatermarkMiddleware:
                 text,
                 user_id=user_id,
                 language=ctx.language,
+                session_salt=ctx.session_salt,  # 预置盐 → 整流共享可溯源
             )
             self.last_result = result
             self._notify_embed(result, ctx)

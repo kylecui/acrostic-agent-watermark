@@ -101,7 +101,7 @@ def create_app():
     """创建 FastAPI app。"""
     from fastapi import FastAPI, HTTPException
 
-    app = FastAPI(title="AAWM Watermark Service", version="0.8.0")
+    app = FastAPI(title="AAWM Watermark Service", version="0.9.0")
 
     @app.get("/v1/health")
     async def health() -> dict:

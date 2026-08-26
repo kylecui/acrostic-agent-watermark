@@ -12,6 +12,7 @@
 | **A. 通用 SDK 三件套** | 你自己写 agent 代码 | 3 行 | [examples/05_plugin_quickstart.py](../examples/05_plugin_quickstart.py) |
 | **B. 适配器一行包装** | 用 openai / LangChain / LiteLLM / AutoGen / CrewAI | 1 行 | [examples/06_agent_demo.py](../examples/06_agent_demo.py) |
 | **C. 低代码平台** | Dify / Coze 等无代码编排 | 配置 + 1 个 HTTP 调用 | 见 §5 |
+| **D. CLI/IDE agent** | Claude Code / Codex / opencode / WorkBuddy / Antigravity / PI / Qwen Code 等黑盒进程 | 改 base_url | [cli_agent_proxy_guide.md](cli_agent_proxy_guide.md) |
 
 无论哪种形态，核心都是同一个 `Watermarker` 对象：
 

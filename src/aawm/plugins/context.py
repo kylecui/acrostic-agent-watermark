@@ -40,12 +40,15 @@ class Context:
     Attributes:
         user_id: 用户标识。int=直接 UID；str=别名（经注册库映射）；None=未指定（跳过嵌入）
         session_id: 会话 ID。用于 session_salt 派生（None→自动生成新 salt）
+        session_salt: 固定会话盐（None→嵌入时自动生成）。流式等需
+            整流共享同一盐的场景预置，保证整段文本可溯源
         language: 语言提示。"en" / "zh" / None（自动检测）
         metadata: 透传的额外元数据
     """
 
     user_id: Optional[Union[int, str]] = None
     session_id: Optional[str] = None
+    session_salt: Optional[bytes] = None
     language: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
 

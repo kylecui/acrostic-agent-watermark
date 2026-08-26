@@ -8,6 +8,9 @@
     aawm embed --key <file> --user <id> [--registry <file>] <input.txt> [-o marked.txt]
     aawm trace --key <file> [--registry <file>] [--salt <hex>] <suspect.txt>
     aawm serve --key <file> [--registry <file>] --port 8765
+    aawm proxy --key <file> --key-map keys.json [--port 8787]
+            [--upstream-openai URL] [--upstream-anthropic URL]
+            [--salt-archive salts.jsonl]
 """
 from __future__ import annotations
 
@@ -43,6 +46,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_trace(args)
     elif args.command == "serve":
         return _cmd_serve(args)
+    elif args.command == "proxy":
+        return _cmd_proxy(args)
     else:
         parser.print_help()
         return 1
@@ -243,6 +248,64 @@ def _cmd_serve(args: argparse.Namespace) -> int:
 
 
 # ----------------------------------------------------------------------
+# proxy（CLI/IDE agent 本地网关）
+# ----------------------------------------------------------------------
+
+def _cmd_proxy(args: argparse.Namespace) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print("uvicorn 未安装。请运行: pip install 'aawm[server]'", file=sys.stderr)
+        return 1
+
+    ks = KeyStore.from_any(key_file=args.key, master_key=args.key_hex)
+    reg = UIDRegistry(backend="file", path=args.registry) if args.registry else None
+    wm = _make_watermarker(args, ks, reg)
+
+    # key→UID 映射：JSON 文件 {"sk-aawm-alice": 41244, ...}（值支持 0x 前缀/别名）
+    from pathlib import Path as _P
+    key_map: dict = {}
+    for k, v in json.loads(_P(args.key_map).read_text(encoding="utf-8")).items():
+        if isinstance(v, str):
+            if v.lower().startswith("0x"):
+                key_map[k] = int(v, 16)
+            elif v.isdigit():
+                key_map[k] = int(v)
+            elif reg is not None:
+                uid = reg.resolve_alias(v)
+                if uid is None:
+                    print(f"key-map 别名未注册: {v}", file=sys.stderr)
+                    return 1
+                key_map[k] = uid
+            else:
+                print(f"key-map 值必须是 UID 数字或已注册别名: {v}", file=sys.stderr)
+                return 1
+        else:
+            key_map[k] = int(v)
+
+    import os
+    from .proxy import ProxyConfig, create_proxy_app
+    cfg = ProxyConfig(
+        upstream_openai=args.upstream_openai or os.environ.get("AAWM_UPSTREAM_OPENAI", "https://api.openai.com"),
+        upstream_anthropic=args.upstream_anthropic or os.environ.get("AAWM_UPSTREAM_ANTHROPIC", "https://api.anthropic.com"),
+        key_map=key_map,
+        upstream_openai_key=os.environ.get("OPENAI_API_KEY"),
+        upstream_anthropic_key=os.environ.get("ANTHROPIC_API_KEY"),
+        salt_archive=_P(args.salt_archive) if args.salt_archive else None,
+    )
+    app = create_proxy_app(wm, cfg)
+
+    print(f"AAWM 代理网关启动于 http://{args.host}:{args.port}")
+    print(f"  OpenAI 协议上游:    {cfg.upstream_openai}")
+    print(f"  Anthropic 协议上游: {cfg.upstream_anthropic}")
+    print(f"  已映射客户端 key:   {len(key_map)} 个")
+    if cfg.salt_archive:
+        print(f"  salt 归档: {cfg.salt_archive}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    return 0
+
+
+# ----------------------------------------------------------------------
 # 内部工具
 # ----------------------------------------------------------------------
 
@@ -346,6 +409,24 @@ def _make_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--port", type=int, default=8765, help="监听端口")
     p_serve.add_argument("--log-level", default="info", help="日志级别")
     _add_codec_options(p_serve)
+
+    # proxy
+    p_proxy = sub.add_parser("proxy", help="启动 CLI/IDE agent 代理网关")
+    p_proxy.add_argument("--key", help="密钥文件路径")
+    p_proxy.add_argument("--key-hex", dest="key_hex", help="密钥 hex")
+    p_proxy.add_argument("--registry", help="注册库文件路径")
+    p_proxy.add_argument("--key-map", dest="key_map", required=True,
+                         help="客户端 key→UID 映射 JSON：{\"sk-aawm-alice\": 41244}")
+    p_proxy.add_argument("--host", default="127.0.0.1", help="监听地址")
+    p_proxy.add_argument("--port", type=int, default=8787, help="监听端口")
+    p_proxy.add_argument("--upstream-openai", dest="upstream_openai",
+                         help="OpenAI 协议上游 base URL（默认环境变量 AAWM_UPSTREAM_OPENAI）")
+    p_proxy.add_argument("--upstream-anthropic", dest="upstream_anthropic",
+                         help="Anthropic 协议上游 base URL（默认环境变量 AAWM_UPSTREAM_ANTHROPIC）")
+    p_proxy.add_argument("--salt-archive", dest="salt_archive",
+                         help="salt 归档 JSONL 文件（溯源必用）")
+    p_proxy.add_argument("--log-level", default="info", help="日志级别")
+    _add_codec_options(p_proxy)
 
     return parser
 
