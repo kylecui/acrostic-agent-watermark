@@ -567,6 +567,39 @@ class TestWatermarkMiddleware:
         assert result is None
         assert marked == ""
 
+    def test_on_embed_called_with_result(self):
+        """on_embed 回调收到 EmbedResult，且 salt 可用于溯源。"""
+        wm = Watermarker()
+        archived = {}
+
+        def on_embed(result, ctx):
+            archived[result.user_id] = result.session_salt
+
+        mw = WatermarkMiddleware(wm, on_embed=on_embed)
+        ctx = Context(user_id=42)
+        marked, result = mw.transform(LONG_TEXT_EN, ctx)
+
+        assert result is not None
+        assert 42 in archived
+        # 用回调存下的 salt 能成功溯源
+        t = wm.trace(marked, session_salt=archived[42])
+        assert t.watermarked
+        assert t.uid == 42
+
+    def test_on_embed_fail_open(self):
+        """on_embed 回调抛异常时不影响嵌入主流程（fail-open）。"""
+        wm = Watermarker()
+
+        def bad_callback(result, ctx):
+            raise RuntimeError("archive down")
+
+        mw = WatermarkMiddleware(wm, on_embed=bad_callback)
+        ctx = Context(user_id=42)
+        marked, result = mw.transform(LONG_TEXT_EN, ctx)
+
+        assert result is not None  # 嵌入仍成功
+        assert marked != LONG_TEXT_EN
+
     def test_should_embed_string(self):
         wm = Watermarker()
         mw = WatermarkMiddleware(wm)

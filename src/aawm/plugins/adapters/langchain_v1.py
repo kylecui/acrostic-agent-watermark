@@ -59,6 +59,7 @@ class AAWMMiddleware(AgentMiddleware):  # type: ignore[misc]
         *,
         min_text_length: int = 50,
         skip_if_no_context: bool = True,
+        on_embed: Optional[Any] = None,
     ) -> None:
         if not _HAS_LANGCHAIN:
             raise ImportError(
@@ -70,6 +71,7 @@ class AAWMMiddleware(AgentMiddleware):  # type: ignore[misc]
             context_chain or ContextChain.default(),
             min_text_length=min_text_length,
             skip_if_no_context=skip_if_no_context,
+            on_embed=on_embed,
         )
 
     # ------------------------------------------------------------------

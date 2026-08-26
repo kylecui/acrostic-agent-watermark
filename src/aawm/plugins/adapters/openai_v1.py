@@ -31,7 +31,7 @@ openai 安装（纯 duck-typing 包装），对同步 ``OpenAI`` 与异步
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from ..context import Context, ContextChain
 from ..facade import Watermarker
@@ -44,12 +44,14 @@ def _build_middleware(
     *,
     min_text_length: int,
     skip_if_no_context: bool,
+    on_embed: Optional[Callable[[Any, Any], None]] = None,
 ) -> WatermarkMiddleware:
     return WatermarkMiddleware(
         watermarker,
         context_chain or ContextChain.default(),
         min_text_length=min_text_length,
         skip_if_no_context=skip_if_no_context,
+        on_embed=on_embed,
     )
 
 
@@ -73,6 +75,7 @@ def wrap_openai_client(
     *,
     min_text_length: int = 50,
     skip_if_no_context: bool = True,
+    on_embed: Optional[Callable[[Any, Any], None]] = None,
 ) -> Any:
     """包装同步 ``openai.OpenAI`` 客户端。
 
@@ -82,13 +85,15 @@ def wrap_openai_client(
         context_chain: ContextProvider 链（None 用默认三级链）
         min_text_length: 最小嵌入文本长度
         skip_if_no_context: 无 user_id 上下文时是否跳过嵌入
+        on_embed: 嵌入成功回调 ``(EmbedResult, Context)``，用于存档 session_salt
 
     Returns:
         同一个 client（chat.completions.create 已被包装）
     """
     mw = _build_middleware(watermarker, context_chain,
                            min_text_length=min_text_length,
-                           skip_if_no_context=skip_if_no_context)
+                           skip_if_no_context=skip_if_no_context,
+                           on_embed=on_embed)
     original = client.chat.completions.create
 
     def create(*args: Any, **kwargs: Any) -> Any:
@@ -108,6 +113,7 @@ def wrap_async_openai_client(
     *,
     min_text_length: int = 50,
     skip_if_no_context: bool = True,
+    on_embed: Optional[Callable[[Any, Any], None]] = None,
 ) -> Any:
     """包装异步 ``openai.AsyncOpenAI`` 客户端。
 
@@ -116,7 +122,8 @@ def wrap_async_openai_client(
     """
     mw = _build_middleware(watermarker, context_chain,
                            min_text_length=min_text_length,
-                           skip_if_no_context=skip_if_no_context)
+                           skip_if_no_context=skip_if_no_context,
+                           on_embed=on_embed)
     original = client.chat.completions.create
 
     async def create(*args: Any, **kwargs: Any) -> Any:

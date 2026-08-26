@@ -11,11 +11,19 @@
     marked, result = mw.transform(text, ctx)
     if result is not None:
         write_back(response, marked)
+
+**salt 存档**：中间件自动嵌入的场景下，``session_salt`` 不会自动回到调用方。
+必须通过 ``on_embed`` 回调把它存档（写 DB / 日志），否则事后无法溯源：:
+
+    def on_embed(result: EmbedResult, ctx: Context) -> None:
+        db.save(salt=result.session_salt, uid=ctx.user_id, ts=now())
+
+    mw = WatermarkMiddleware(wm, on_embed=on_embed)
 """
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional, Tuple
+from typing import Any, Callable, Optional, Tuple
 
 from .context import Context, ContextChain
 from .facade import EmbedResult, Watermarker
@@ -34,6 +42,7 @@ class WatermarkMiddleware:
         context_chain: ContextProvider 解析链
         min_text_length: 最小文本长度（短于此不嵌入）
         skip_if_no_context: 无有效上下文时是否跳过（True=跳过不嵌入）
+        on_embed: 嵌入成功后的回调（用于存档 session_salt），fail-open
     """
 
     def __init__(
@@ -43,11 +52,16 @@ class WatermarkMiddleware:
         *,
         min_text_length: int = 50,
         skip_if_no_context: bool = True,
+        on_embed: Optional[Callable[[EmbedResult, Context], None]] = None,
     ) -> None:
         self.watermarker = watermarker
         self.context_chain = context_chain or ContextChain.default()
         self.min_text_length = min_text_length
         self.skip_if_no_context = skip_if_no_context
+        self.on_embed = on_embed
+
+        # 最近一次嵌入结果（便捷属性，调试/测试用）
+        self.last_result: Optional[EmbedResult] = None
 
     # ------------------------------------------------------------------
     # 核心：嵌入
@@ -95,10 +109,24 @@ class WatermarkMiddleware:
                 user_id=user_id,
                 language=ctx.language,
             )
+            self.last_result = result
+            self._notify_embed(result, ctx)
             return result.watermarked_text, result
         except Exception as e:
             logger.warning("watermark embed failed, fail-open to original text: %s", e)
             return text, None
+
+    def _notify_embed(self, result: EmbedResult, ctx: Context) -> None:
+        """通知 on_embed 回调（fail-open：回调异常不阻断嵌入流程）。
+
+        回调收到完整 EmbedResult（含 session_salt），用于存档溯源凭据。
+        """
+        if self.on_embed is None:
+            return
+        try:
+            self.on_embed(result, ctx)
+        except Exception as e:
+            logger.warning("on_embed callback failed (salt not archived): %s", e)
 
     # ------------------------------------------------------------------
     # 响应判定

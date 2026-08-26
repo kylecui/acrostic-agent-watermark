@@ -37,6 +37,7 @@ def setup_hooks(
     context_chain: Optional[ContextChain] = None,
     *,
     min_text_length: int = 50,
+    on_embed: Optional[Any] = None,
 ) -> None:
     """初始化水印中间件（在 LiteLLM Proxy 启动时调用）。
 
@@ -44,12 +45,14 @@ def setup_hooks(
         watermarker: Watermarker 实例
         context_chain: ContextProvider 链（None 用默认）
         min_text_length: 最小嵌入文本长度
+        on_embed: 嵌入成功回调 ``(EmbedResult, Context)``，用于存档 session_salt
     """
     global _mw, _chain
     _mw = WatermarkMiddleware(
         watermarker,
         context_chain or ContextChain.default(),
         min_text_length=min_text_length,
+        on_embed=on_embed,
     )
     _chain = _mw.context_chain
 

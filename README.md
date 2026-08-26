@@ -93,12 +93,26 @@ OpenAI SDK 适配器（直接包装客户端，同步/异步/流式都支持）�
 
 ```python
 from aawm.plugins.adapters.openai_v1 import wrap_openai_client
-client = wrap_openai_client(openai.OpenAI(), watermarker)
+client = wrap_openai_client(openai.OpenAI(), watermarker, on_embed=archive_salt)
 resp = client.chat.completions.create(..., user_id="user-alice")
 # resp.choices[0].message.content 已自动嵌水印
 ```
 
-> 详见 [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md)
+AutoGen / CrewAI 适配器（2026 主流多智能体编排）：
+
+```python
+from aawm.plugins.adapters.autogen_v1 import wrap_autogen_agent
+agent = wrap_autogen_agent(AssistantAgent(...), watermarker, user_id="alice")
+
+from aawm.plugins.adapters.crewai_v1 import setup_hooks
+setup_hooks(watermarker, user_id="alice")   # crew.kickoff() 输出自动嵌水印
+```
+
+> 所有适配器都是 **Fail-open**（嵌入失败绝不影响 agent 响应），且支持
+> `on_embed` 回调存档 session_salt——中间件嵌入模式下溯源的前提。
+> 低代码平台（Dify/Coze）接入方案见 agent 嵌入指南。
+
+> 详见 [docs/agent_embedding_guide.md](docs/agent_embedding_guide.md) | [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md)
 
 ### v0.7 中文零感水印（codec 模式）
 
@@ -254,14 +268,18 @@ acrostic-agent-watermark/
 │           ├── context.py    # 上下文解析链（3 级优先）
 │           ├── streaming.py  # 句子级流式水印
 │           └── adapters/
+│               ├── openai_v1.py      # OpenAI SDK 包装（同步/异步/流式）
 │               ├── langchain_v1.py   # LangChain Agent 适配器
-│               └── litellm_proxy.py  # LiteLLM Proxy 适配器
-├── tests/                     # 204 项测试（v0.2-v0.4 核心 + v0.6 插件）
+│               ├── litellm_proxy.py  # LiteLLM Proxy 适配器
+│               ├── autogen_v1.py     # AutoGen (agentchat) 适配器
+│               └── crewai_v1.py      # CrewAI LLM hooks 适配器
+├── tests/                     # 272 项测试（核心 + 插件 + 适配器）
 ├── examples/
 │   ├── 01_minimal_embed.py    # 嵌入并解码用户 ID
 │   ├── 02_multiuser_robustness.py  # 多用户区分 + 攻击鲁棒性
 │   ├── 03_edit_robustness.py  # 内容寻址 vs 位置索引的编辑攻击对比
-│   └── 05_plugin_quickstart.py # v0.6 插件端到端示例
+│   ├── 05_plugin_quickstart.py # v0.6 插件端到端示例
+│   └── 06_agent_demo.py       # v0.7 真实 agent 端到端泄露溯源演示
 ├── experiments/
 │   ├── exp_edit_attacks.py    # 编辑攻击系统评测 + paraphrase 评测
 │   └── exp_sentence_stats.py # v0.4 句级统计量保留性验证
