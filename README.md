@@ -114,8 +114,12 @@ setup_hooks(watermarker, user_id="alice")   # crew.kickoff() 输出自动嵌水�
 > Claude Code / Codex / opencode / WorkBuddy / Antigravity / PI / Qwen Code
 > 等 CLI/IDE agent 是黑盒进程，只需把 base_url 指向本地代理网关即可零改造接入。
 > 见 [docs/cli_agent_proxy_guide.md](docs/cli_agent_proxy_guide.md)。
+>
+> 对 agent **产出的落盘交付物**（报告/文档/代码）按需/自动打标：直接用
+> [skills/aawm-watermark](skills/aawm-watermark) 技能包——SKILL 指令 +
+> `embed_files.sh`/`trace_file.sh` 脚本 + Claude Code PostToolUse 自动触发 hook。
 
-> 详见 [docs/agent_embedding_guide.md](docs/agent_embedding_guide.md) | [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md) | [docs/cli_agent_proxy_guide.md](docs/cli_agent_proxy_guide.md)
+> 详见 [docs/agent_embedding_guide.md](docs/agent_embedding_guide.md) | [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md) | [docs/cli_agent_proxy_guide.md](docs/cli_agent_proxy_guide.md) | [skills/aawm-watermark](skills/aawm-watermark)
 
 ### v0.7 中文零感水印（codec 模式）
 
