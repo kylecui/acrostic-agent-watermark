@@ -29,3 +29,6 @@ corpus/
 tmp_e2e/
 tmp_install/
 tmp_smoke/
+
+.env
+.env
