@@ -27,19 +27,22 @@ Watermarker(
     registry: UIDRegistry | None = None,      # UID 注册库（None=无注册库，str 别名哈希为 UID）
     language: str = "auto",                   # "en" / "zh" / "auto"（按 CJK 检测）
     thresholds: DetectionThresholds | None = None,
-    codec_mode: str = "default",              # v0.7 中文 codec：default/zero_cost/hybrid
+    codec_mode: str = "zero_cost",        # v0.7+ codec：default/zero_cost/hybrid（中英双语）
     supplementary_dict: dict | None = None,   # v0.7 hybrid 模式的补充词表
     calibrate_corpus: list[str] | None = None,  # v0.7 null 语料（零感模式阈值标定）
 ) -> None
 ```
 
-**codec 模式（v0.7，仅中文生效；英文恒走 default）**：
+**codec 模式（v0.7 起；v0.9 起中英文各自有零感词典，均生效）**：
 
 | 模式 | 词典 | 适用 |
 |---|---|---|
-| `default` | 全词林（4538 组） | 向后兼容，容量大但替换扰动明显 |
-| `zero_cost` | 零感词典（75 组双字词） | **推荐**，嵌入对文本观感几乎无扰动 |
+| `default` | 全词林（中文 4538 组 / 英文同义组） | 向后兼容，容量大但替换扰动明显 |
+| `zero_cost` | 零感词典（中文 136 组双字词 / 英文 133 组拼写变体+功能副词+安全对） | **推荐**，嵌入对文本观感几乎无扰动 |
 | `hybrid` | 零感打底 + `supplementary_dict` 补带 | 需要比 zero_cost 更大容量时 |
+
+英文零感词典对通用文本命中稀疏（通用英文容量明显小于 default 词林），
+适合 AI 长输出等零感词密度高的场景；极短英文受容量限制，建议看统计行。
 
 `calibrate_corpus` 提供**未加水印**的正常输出样本后，`_fit_null_model`
 用每带归一化 ratio 模型（Σ|z|/m）在 5 个 salt 上采样、3σ 上界作为
@@ -75,9 +78,9 @@ result = wm.trace(
     session_salt: bytes | None = None,   # 嵌入时的盐（强烈建议传）
     seal: BindingSeal | None = None,     # 嵌入时的签名（篡改检测用）
     language: str | None = None,
-    soft_match: bool = False,            # v0.7 软判决注册库匹配（见下）
+    soft_match: bool = True,             # v0.10 起默认启用软判决注册库匹配（见下）
     match_margin: float = 2.0,           # 软判决置信阈值（最优-次优得分差下限）
-    match_margin_ratio: float | None = None,  # v0.8 自适应置信系数（见下）
+    match_margin_ratio: float | None = 0.3,  # v0.10 起默认 0.3 自适应置信系数（见下）
     bands: list[int] | None = None,      # v0.7 自适应路径的带列表（embed 返回，需回传）
     n_bits: int | None = None,           # v0.7 自适应路径的编码位数
 ) -> TraceResult
@@ -88,20 +91,41 @@ result = wm.trace(
 不传则走旧 `detect`（default 词典），两者检测口径不同，trace 时务必
 回传 embed 返回的 `bands/n_bits`。
 
-**软判决注册库匹配（v0.7 鲁棒性增强）**：`soft_match=True` 时，用
-`GreenlistCodec.soft_match` 对注册库全部 UID 逐带 z 打点积分
+**软判决注册库匹配（v0.7 鲁棒性增强；v0.10 起默认启用）**：`soft_match=True`
+时，用 `GreenlistCodec.soft_match` 对注册库全部 UID 逐带 z 打点积分
 （min_n=1，弱证据带参与），替代"解码 UID + 汉明最近邻"路径。
 只在水印存在性判定通过后采纳软匹配结果（soft_match 是候选区分器，
 null 文本也可能与某候选方向对齐）。实测：30% 同组改写攻击下
 匹配率 20→27/30，PAWS 温和改写 22→25/30；`match_margin=2.0`
 可把错误匹配全部转为 abstain。
 
-**自适应置信阈值（v0.8）**：`match_margin_ratio` 提供按证据量放大的
-置信余量，生效阈值 `max(match_margin, ratio·√n_dict)`——短文本由
-绝对项主导、长文本由比例项主导。解决固定绝对 margin 对长文本偏松
-（50% 改写下错误 gap 仍超 2.0，"自信地错"）。实测错误匹配的
-gap/√n_dict 上界跨语料稳定 ≈0.22；ratio 是"宁可 abstain 也不错"
-的权衡旋钮，按部署语料调（详见 design §13.11 / capability §二·五·D）。
+**软判决拒绝（v0.10，默认行为变更）**：当 margin 门限拒绝（最优-次优
+得分差不足，soft_uid=None）时，trace **不再回退硬解码 UID**——攻击下
+存在性常存活但解码不可靠，硬解码恰恰是"高置信度错误归因"（存在性
+存活但 UID 解错、仍输出错误用户）的来源。软判决拒绝时归因置信度
+`attribution_confidence` 直接判 0，触发 abstain（uid/user=None）。
+
+**自适应置信阈值（v0.8；v0.10 起默认 0.3）**：`match_margin_ratio`
+提供按证据量放大的置信余量，生效阈值 `max(match_margin, ratio·√n_dict)`
+——短文本由绝对项主导、长文本由比例项主导。解决固定绝对 margin
+对长文本偏松（50% 改写下错误 gap 仍超 2.0，"自信地错"）。实测错误
+匹配的 gap/√n_dict 上界跨语料稳定 ≈0.22，正确匹配均值 0.5~0.7；
+ratio 是"宁可 abstain 也不错"的权衡旋钮，按部署语料调（详见 design
+§13.11 / capability §二·五·D）。None 时纯绝对阈值（v0.7 兼容）。
+
+**归因置信度（v0.10）**：`attribution_confidence = 判别力 × 容量充分性`
+，独立于存在性 `confidence`（后者只反映"信号多强"，不反映"UID 解对
+没有"）：
+- 判别力：软判决路径用 `gap/√n_dict` 线性映射（≤0.22→0，≥0.4→1，
+  锚点来自跨语料实测）；margin 门限拒绝时直接为 0。硬判决路径（显式
+  `soft_match=False`）按汉明距映射（0→1，≥max_hamming→0）。无注册库
+  对比时给上限 0.5。
+- 容量充分性：自适应 k-bit 空间内注册库 UID 掩码后若有碰撞（如
+  n_bits=6 下 UID 1 与 65 均 mask 成 1），二者在数学上不可区分，
+  cap=0 一票否决。
+- `attribution_confidence < attribution_floor`（默认 0.5）时
+  `attribution_abstain=True` 且 uid/user/hamming_dist 置空——输出
+  "不可判定"，而非一个可能错误的具体用户。
 
 ### 其他方法
 
@@ -151,6 +175,9 @@ class TraceResult:
     n_dict_words: int              # 词典命中数
     soft_uid: int | None           # 软判决匹配 UID（soft_match=True 时）
     soft_gap: float                # 软判决最优-次优得分差（未启用=-1.0）
+    # v0.10 归因置信度
+    attribution_confidence: float  # [0,1] 归因可靠性（=判别力×容量充分性）
+    attribution_abstain: bool      # True=检出但归因置信不足，uid/user 已置 None
     # v0.7 自适应路径
     codec_mode: str = "default"    # default/zero_cost/hybrid
     bands: list[int] = []          # 检测用的带列表（embed 回传）
@@ -171,6 +198,12 @@ class DetectionThresholds:
     # v0.7 自适应路径阈值（无 null 标定时的默认线性常数）
     adaptive_intercept: float = 1.0
     adaptive_slope: float = 1.6    # 阈值 ≈ intercept + slope × 活动带数
+    # v0.10 归因置信度判定参数（对抗场景"高置信度错误归因"防御）
+    attribution_floor: float = 0.5   # AC < 此值 → abstain（uid=None）
+    gap_error_hi: float = 0.22       # gap/√n_dict ≤ 此值视为错误区间（实测上界）
+    gap_ok_lo: float = 0.4           # gap/√n_dict ≥ 此值视为可靠区间
+    capacity_full_width: int = 16    # 自适应 k-bit 空间参考宽度
+    hard_no_cands_cap: float = 0.5   # 无候选对比时判别力上限
 ```
 
 ---
@@ -374,7 +407,7 @@ aawm serve --key F [--registry F] [--port 8765] [--log-level info]
 ```bash
 aawm embed input.txt --key key.json --user 42 \
       --codec-mode zero_cost --calibrate-corpus ./corpus/ -o marked.txt
-#   --codec-mode {default,zero_cost,hybrid}    # 默认 default（英文恒 default）
+#   --codec-mode {default,zero_cost,hybrid}    # 默认 zero_cost（中英双语）
 #   --calibrate-corpus DIR|FILE                # null 语料（目录下所有 .txt 或单文件）
 #   --n-bits N                                 # embed 用：编码位数（None=满容量）
 ```

@@ -30,6 +30,7 @@ from .keys import KeyContext, derive_key
 from .synonym_data import (
     load_default_en_dictionary,
     load_default_zh_dictionary,
+    load_zero_cost_en_dictionary,
     load_zero_cost_zh_block_words,
     load_zero_cost_zh_dictionary,
 )
@@ -118,6 +119,33 @@ def build_zero_cost_zh_codec(
     return codec
 
 
+def build_zero_cost_en_codec(
+    master_key: bytes,
+    session_salt: bytes,
+    *,
+    n_bands: int = DEFAULT_N_BANDS,
+    calibrate_corpus: Optional[Sequence[str]] = None,
+) -> "GreenlistCodec":
+    """英文零感词典 codec（拼写变体 + 功能副词 + 高自然安全对）。
+
+    英文走 en_tokenizer（正则切词，norm 小写），词典全小写单 token，
+    无需中文那样的阻断词表。检测时文本大小写不影响匹配。
+
+    Args:
+        calibrate_corpus: 无水印参考语料。给出时自动调用 calibrate_p0
+            逐带标定绿率（默认 p0=0.5）。建议传入部署场景语料的后半
+            部分（与嵌入文本不重叠）。
+    """
+    dictionary = load_zero_cost_en_dictionary()
+    codec = GreenlistCodec(
+        master_key, session_salt, n_bands=n_bands,
+        dictionary=dictionary, language_tag=b"en",
+    )
+    if calibrate_corpus is not None:
+        codec.calibrate_p0(calibrate_corpus)
+    return codec
+
+
 def build_hybrid_zh_codec(
     master_key: bytes,
     session_salt: bytes,
@@ -177,6 +205,40 @@ def build_hybrid_zh_codec(
     codec = GreenlistCodec(
         master_key, session_salt, n_bands=n_bands,
         dictionary=merged, language_tag=b"zh", tokenizer=tokenizer,
+    )
+    if calibrate_corpus is not None:
+        codec.calibrate_p0(calibrate_corpus)
+    return codec
+
+
+def build_hybrid_en_codec(
+    master_key: bytes,
+    session_salt: bytes,
+    *,
+    supplementary_dict: Dict[str, List[str]],
+    calibrate_corpus: Optional[Sequence[str]] = None,
+    n_bands: int = DEFAULT_N_BANDS,
+) -> "GreenlistCodec":
+    """英文混合词典 codec：英文零感打底 + 补充词典合并。
+
+    与中文 hybrid 对齐：零感词典先入取 word_owner 优先权；补充词典组
+    仅当不与零感词共享任何词时加入。英文无单字语素误切，也不需要
+    collocation 过滤（build_char_context 是中文字符级上下文）。
+    """
+    zero_dict = load_zero_cost_en_dictionary()
+    zero_words = {w for ws in zero_dict.values() for w in ws}
+
+    merged: Dict[str, List[str]] = dict(zero_dict)
+    owned = set(zero_words)
+    for key, words in supplementary_dict.items():
+        if any(w in owned for w in words):
+            continue
+        merged[key] = words
+        owned.update(words)
+
+    codec = GreenlistCodec(
+        master_key, session_salt, n_bands=n_bands,
+        dictionary=merged, language_tag=b"en",
     )
     if calibrate_corpus is not None:
         codec.calibrate_p0(calibrate_corpus)
@@ -367,31 +429,40 @@ class GreenlistCodec:
         parts = self._tokenizer(text)
         out: List[str] = []
         last_char = ""  # 已输出文本的最后一个字符（边界检查用）
+        last_word = ""  # 上一输出的完整词（小写），相邻重复抑制用
         for i, (raw, norm) in enumerate(parts):
             b = self._w2band.get(norm) if norm is not None else None
             next_char = parts[i + 1][0][:1] if i + 1 < len(parts) else ""
+            next_word = parts[i + 1][0].lower() if i + 1 < len(parts) else ""
             if b is None or rng.random() >= bias:
                 out.append(raw)
                 if raw:
                     last_char = raw[-1]
+                    last_word = raw.lower()
                 continue
             want = bool(bits[b])
             pool = [x for x in self._w2group[norm] if bool(self.green(x)) == want]
             choice = None
             for cand in rng.sample(pool, len(pool)):  # 随机序 + 边界稳定
                 if self._boundary_safe(last_char, cand, next_char):
+                    # 相邻重复抑制：候选与相邻词相同则跳过（同组孪生词
+                    # 并列时"evidence and proof"→"proof and proof" 病句）
+                    if cand == last_word or cand == next_word:
+                        continue
                     choice = cand
                     break
             if choice is None:
-                out.append(raw)  # 全部候选边界不稳：保守跳过
+                out.append(raw)  # 全部候选边界不稳/相邻重复：保守跳过
                 if raw:
                     last_char = raw[-1]
+                    last_word = raw.lower()
                 continue
             # 保留原文的大小写风格（首字母大写 -> 首字母大写；中文恒 False 无影响）
             if raw[:1].isupper():
                 choice = choice.capitalize()
             out.append(choice)
             last_char = choice[-1]
+            last_word = choice.lower()
         return "".join(out)
 
     # ------------------------------------------------------------------

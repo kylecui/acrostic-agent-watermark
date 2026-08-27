@@ -42,10 +42,12 @@ aawm registry list --registry registry.json
 > **密钥安全**：master_key 是溯源的唯一凭证。建议放 KMS / 环境变量，不要提交进代码库。
 > `key.json` 已自动 chmod 600。
 
-### 中文零感模式（v0.7，推荐）
+### 零感模式（v0.7 起；v0.9 中英双语）
 
-中文输出建议显式启用 `zero_cost` 模式并做 null 标定——嵌入对文本观感几乎
+中英文输出默认都走 `zero_cost` 模式并建议做 null 标定——嵌入对文本观感几乎
 无扰动，且标定后存在性检测的误报率显著下降（实测 13/30 → 0/30）。
+英文零感词典（拼写变体 + 功能副词）对通用文本命中稀疏，容量小于中文与
+default 词林，适合 AI 长输出；极短英文看统计行容量。
 
 ```python
 from aawm.plugins import Watermarker
@@ -290,22 +292,27 @@ print(trace.tampered)        # None=无seal无法判定 / True=被篡改 / False
 print(trace.tampered_paragraphs)  # 被改段落索引
 ```
 
-#### 软判决匹配（v0.7，改写攻击下更鲁棒）
+#### 软判决匹配（v0.7；v0.10 起默认启用）
 
-默认溯源走"解码 UID + 汉明最近邻"硬判决。对疑似被改写的文本，
-开启软判决注册库匹配（逐带 z 打点积分，弱证据带参与），
-30% 同组改写攻击下匹配率 20→27/30：
+**v0.10 起 `soft_match=True`、`match_margin_ratio=0.3` 是默认值**——
+溯源默认走软判决注册库匹配（逐带 z 打点积分，弱证据带参与），
+30% 同组改写攻击下匹配率 20→27/30。以下写法为显式风格（与默认等价）：
 
 ```python
 trace = watermarker.trace(
     suspect_text,
     session_salt=stored_salt,
-    soft_match=True,      # 启用软判决匹配
+    soft_match=True,      # v0.10 起为默认，可省略
     match_margin=2.0,     # 最优-次优得分差下限（低于则 abstain，uid=None）
-    # v0.8：match_margin_ratio=0.5 启用自适应置信阈值（见下）
+    match_margin_ratio=0.3,   # v0.10 起为默认自适应置信系数
 )
-print(trace.soft_gap)     # 最优-次优得分差；gap<margin 说明置信不足需复核
+print(trace.soft_gap)     # 最优-次优得分差；gap<生效 margin 说明置信不足需复核
 ```
+
+**软判决拒绝（v0.10，行为变更）**：margin 门限拒绝（soft_uid=None）时
+不再回退硬解码 UID——攻击下存在性常存活但解码不可靠，硬解码正是
+"高置信度错误归因"的来源。此时 `attribution_confidence=0` 触发 abstain，
+`uid/user` 置 None。
 
 **自适应置信阈值（v0.8）**：长文本（词典词上千）下 gap 的统计尺度
 随 √n_dict 增长，固定 `match_margin=2.0` 会偏松——重度改写后错误
@@ -329,6 +336,24 @@ trace = watermarker.trace(
 
 注意：软判决只提升"有损文本的归属能力"，不改变存在性判定；
 `trace.watermarked` 仍由 Σ|z| 阈值决定（未嵌水印文本不会被误归因）。
+
+#### 归因置信度与 abstain（v0.10，对抗防御）
+
+对抗场景最危险的失败模式是**高置信度错误归因**——存在性存活（`watermarked=True`）
+但 UID 解错，仍输出一个错误的具体用户。为此 trace 提供独立于存在性
+`confidence` 的归因分数：
+
+```python
+print(trace.attribution_confidence)  # [0,1]，=判别力×容量充分性
+print(trace.attribution_abstain)     # True=检出但归因置信不足，uid/user 已置 None
+```
+
+- **判别力**：软判决路径用 `gap/√n_dict` 线性映射（≤0.22→0，≥0.4→1）；
+  margin 门限拒绝时直接 0。硬判决路径按汉明距映射。
+- **容量充分性**：自适应 k-bit 空间内注册库 UID 掩码碰撞（如 n_bits=6 下
+  UID 1 与 65 均 mask 成 1）时二者数学上不可区分，cap=0 一票否决。
+- `attribution_confidence < 0.5` 时 abstain：`uid/user/hamming_dist` 置空，
+  CLI 退出码 3、server 返回"不可判定"——**宁可不说也不说错**。
 
 ### CLI 溯源
 
@@ -360,9 +385,14 @@ curl -X POST http://localhost:8765/v1/trace \
   "hamming_dist": 1,
   "confidence": 0.45,
   "tampered": false,
-  "existence_score": 18.1
+  "existence_score": 18.1,
+  "attribution_confidence": 0.83,
+  "attribution_abstain": false
 }
 ```
+
+abstain 时（归因置信不足）`uid`/`user` 为 `null`、`attribution_abstain=true`，
+调用方应输出"不可判定用户"而非猜测。
 
 ---
 
@@ -370,12 +400,13 @@ curl -X POST http://localhost:8765/v1/trace \
 
 拿到 `TraceResult` 后的判定逻辑：
 
-| watermarked | uid/user 匹配 | tampered | 结论 |
-|---|---|---|---|
-| True | user 有值 | False | **高置信归属**：文本是 `user` 的，未被篡改 |
-| True | user 有值 | True | **篡改确认 + 溯源**：文本被改过，但仍可归属到 `user` |
-| True | user 为 None | — | 有水印但 UID 偏差大（重度改写）；考虑注册库扩容或降低 max_hamming |
-| False | — | — | 无水印（或改写超过 75%）；非本密钥体系产出 |
+| watermarked | uid/user 匹配 | attribution_abstain | tampered | 结论 |
+|---|---|---|---|---|
+| True | user 有值 | False | False | **高置信归属**：文本是 `user` 的，未被篡改 |
+| True | user 有值 | False | True | **篡改确认 + 溯源**：文本被改过，但仍可归属到 `user` |
+| True | uid/user 为 None | True | — | **不可判定**：检出但归因置信不足（低容量掩码碰撞 / margin 拒绝），不要猜测用户 |
+| True | user 为 None | False | — | 有水印但 UID 偏差大（重度改写）；考虑注册库扩容或降低 max_hamming |
+| False | — | — | — | 无水印（或改写超过 75%）；非本密钥体系产出 |
 
 ---
 
