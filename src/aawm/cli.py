@@ -340,10 +340,10 @@ def _make_watermarker(args: argparse.Namespace, ks, reg) -> Watermarker:
 def _add_codec_options(parser: argparse.ArgumentParser) -> None:
     """embed/trace/serve 共用的 codec 选项。"""
     parser.add_argument("--codec-mode", choices=["default", "zero_cost", "hybrid"],
-                        default="default",
-                        help="中文 codec 模式（default=全词林旧行为；"
-                             "zero_cost=零感词典（推荐，高自然）；"
-                             "hybrid=零感+补充词典（配 --supplementary-dict））")
+                        default="zero_cost",
+                        help="中文 codec 模式（zero_cost=零感词典（默认，高自然）；"
+                             "hybrid=零感+补充词典（配 --supplementary-dict）；"
+                             "default=全词林旧行为，不推荐——实测病句率高）")
     parser.add_argument("--calibrate-corpus", dest="calibrate_corpus",
                         help="p0/null 标定语料（目录或文件路径）")
     parser.add_argument("--supplementary-dict", dest="supplementary_dict",
