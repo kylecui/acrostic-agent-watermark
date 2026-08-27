@@ -52,17 +52,30 @@ bash "$AAWM_SKILL_DIR/scripts/trace_file.sh suspect.md
 
 ## 按平台安装
 
-### WorkBuddy / CodeBuddy
+### 全局命令（推荐先做，任何 agent 都能发现）
 
-把技能包软链或复制到技能目录：
+aawm 装进 python 后其命令入口未必在所有 shell 的 PATH 中（实测 WorkBuddy 内置 python 的 Scripts 目录不在 PATH），导致 agent 检查 `command -v aawm` 失败、误判"没有现成水印工具"。运行安装脚本在用户 bin 目录（已在 PATH）生成 `aawm` / `aawm-embed` / `aawm-trace` 三个全局命令（bash + cmd 双版本）：
 
 ```bash
-# 用户级（跨项目）
-mkdir -p ~/.codebuddy/skills
-ln -s "$AAWM_SKILL_DIR" ~/.codebuddy/skills/aawm-watermark
+bash skills/aawm-watermark/scripts/install_local_shim.sh
+command -v aawm        # 之后任何 bash/agent 都能命中
+aawm embed <文件>      # 或语义化别名 aawm-embed <文件>
+```
+
+> WorkBuddy 升级内置 python 版本后 shim 失效，重跑一次即可（脚本自动取最新版本）。
+
+### WorkBuddy / CodeBuddy
+
+把技能包复制到**当前项目**的技能资源目录（WorkBuddy 启动时扫描加载）：
+
+```bash
+# 项目资源目录（把 <pid> 换成你的项目 ID，见 ~/.workbuddy/project-resources/ 下与项目 mcp.json 同级的目录名）
+cp -r skills/aawm-watermark ~/.workbuddy/project-resources/<pid>/aawm-watermark
 ```
 
 之后在 WorkBuddy 里说"给这个文件加水印 / 溯源"即会触发本技能；要求 agent 产出最终交付物时，它会按 SKILL.md 指令在交付前自动嵌入。
+
+> 若 agent 仍不触发，可直接给命令：`aawm-embed 文件1 文件2` / `aawm-trace 可疑文件`。
 
 ### Claude Code（自动触发，无需记忆）
 
