@@ -1,12 +1,15 @@
 # Acrostic Agent Watermark (AAWM)
 
+[![PyPI version](https://img.shields.io/pypi/v/acrostic-agent-watermark.svg)](https://pypi.org/project/acrostic-agent-watermark/)
+[![PyPI license](https://img.shields.io/pypi/l/acrostic-agent-watermark.svg)](https://pypi.org/project/acrostic-agent-watermark/)
+
 **v0.9 通用 Agent 插件** —— 把水印能力封装为 SDK 中间件，任意 Agent 接入 3 行代码即可自动嵌入用户 ID 水印，实现事后溯源。
 
 > **📖 完整用户手册（product-ready）：[docs/user_guide.md](docs/user_guide.md)**
 > 按 6 种使用方式（CLI / 技能包 / Python SDK / 框架适配器 / HTTP 服务 / 代理网关）提供
 > **安装 → 配置 → 使用 → 验证**四步全流程，所有命令均经真实环境冒烟，可直接照做。
 
-> **v0.6 快速接入**（3 行代码）：
+> **v0.9 快速接入**（3 行代码）：
 > ```python
 > from aawm.plugins import Watermarker
 > wm = Watermarker.from_config("key.json", "registry.json")  # 一次性初始化
@@ -51,17 +54,19 @@
 ### v0.6 通用 Agent 插件（推荐）
 
 ```bash
-# 安装
-pip install -e .
+# 安装（PyPI）
+pip install acrostic-agent-watermark
 
 # 初始化密钥和注册库
 aawm keygen -o key.json
-aawm registry add key.json reg.json --alias agent-cuiyin
+aawm registry add agent-cuiyin --registry reg.json
 
 # CLI 嵌入 + 溯源
 aawm embed input.txt --key key.json --user agent-cuiyin --registry reg.json -o marked.txt
-aawm trace marked.txt --key key.json --registry reg.json --meta marked.txt.meta.json
+aawm trace marked.txt --key key.json --registry reg.json --meta marked.meta.json
 ```
+
+> 源码安装（开发用）：`pip install -e .`，详见 [docs/user_guide.md §2](docs/user_guide.md)。
 
 Python SDK 3 行接入：
 
