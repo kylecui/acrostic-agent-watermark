@@ -105,15 +105,30 @@ def create_proxy_app(
     # ------------------------------------------------------------------
 
     def _archive_salt(result, ctx: Context) -> None:
+        """归档一条溯源存档（JSONL，字段与 CLI meta.json 对齐）。
+
+        bands + seal 必须归档：adaptive 嵌入的检测需要 bands 重建
+        检测路径；seal 的 para_hashes 供 find-meta 免密钥段落匹配。
+        """
         if cfg.salt_archive is None:
             return
         rec = {
             "ts": time.time(),
             "uid": result.user_id,
+            "user_alias": result.user_alias,
             "session_salt": result.session_salt.hex(),
             "n_bits": result.n_bits,
             "codec_mode": result.codec_mode,
+            "bands": list(result.bands or []),
+            "has_seal": result.seal is not None,
         }
+        if result.seal:
+            rec["seal"] = {
+                "merkle_root": result.seal.merkle_root.hex(),
+                "para_hashes": [h.hex() for h in result.seal.para_hashes],
+                "aad": result.seal.aad.hex(),
+                "version": result.seal.version,
+            }
         with cfg.salt_archive.open("a", encoding="utf-8") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
 

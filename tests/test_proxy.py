@@ -69,9 +69,14 @@ def _make_client(handler, archive=None) -> TestClient:
 
 def _last_salt(archive) -> bytes:
     """从归档 JSONL 取最后一个 session_salt。"""
+    return bytes.fromhex(_last_record(archive)["session_salt"])
+
+
+def _last_record(archive) -> dict:
+    """归档最后一条完整记录（salt+bands+seal，与 meta.json 字段对齐）。"""
     lines = archive.read_text(encoding="utf-8").strip().splitlines()
     assert lines, "salt 归档为空——嵌入未发生"
-    return bytes.fromhex(json.loads(lines[-1])["session_salt"])
+    return json.loads(lines[-1])
 
 
 def _salts(archive) -> list:
@@ -113,18 +118,27 @@ def _sse_lines(events: list) -> bytes:
 class TestOpenAIProtocol:
 
     def test_nonstream_embeds_and_key_maps_uid(self, tmp_path: Path):
+        """中文 adaptive 嵌入：归档含 bands+seal，溯源走完整自适应路径。"""
+        from tests.test_e2e_integration import _long_zh_text
+
         archive = tmp_path / "salts.jsonl"
-        c = _make_client(_openai_json_handler(), archive)
+        c = _make_client(_openai_json_handler(_long_zh_text()), archive)
         r = c.post("/v1/chat/completions", json={
             "model": "gpt-4", "messages": [{"role": "user", "content": "hi"}],
         }, headers={"authorization": f"Bearer {ALICE_KEY}"})
         assert r.status_code == 200
         body = r.json()
         text = body["choices"][0]["message"]["content"]
-        assert text != LONG_TEXT
+        assert text != _long_zh_text()
 
-        # 用归档 salt 溯源 → 命中 alice 的 UID
-        trace = _make_wm().trace(text, session_salt=_last_salt(archive))
+        # 归档完整性：bands + seal 必须存档（adaptive 检测与篡改定位依赖）
+        rec = _last_record(archive)
+        assert rec["bands"], "bands 未归档——adaptive 嵌入无法走 adaptive 检测"
+        assert rec["seal"]["para_hashes"], "seal 未归档——无法篡改定位/find-meta 反查"
+
+        # 用归档 salt+bands 溯源 → 命中 alice 的 UID
+        trace = _make_wm().trace(text, session_salt=_last_salt(archive),
+                                 bands=rec["bands"], n_bits=rec["n_bits"])
         assert trace.watermarked and trace.user == "alice"
 
     def test_unmapped_key_passes_through(self):

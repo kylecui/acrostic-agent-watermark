@@ -497,10 +497,19 @@ class TestFacadeZeroCost:
 
 
 class TestFacadeDefaultCompat:
-    """default 模式向后兼容（旧行为不变）。"""
+    """codec_mode 默认值与旧行为兼容性。"""
 
-    def test_default_mode_unchanged(self):
+    def test_default_mode_is_zero_cost(self):
+        """类默认 codec_mode 已改为 zero_cost（2026-08-27，词林病句率原因）。"""
         wm = Watermarker(keystore=KeyStore(bytes(range(32))), language="zh")
+        text = SAMPLE_TEXTS[0]
+        r = wm.embed(text, user_id=42)
+        assert r.codec_mode == "zero_cost"
+
+    def test_legacy_default_mode_explicit(self):
+        """显式 codec_mode='default' 旧行为不变（向后兼容旧部署）。"""
+        wm = Watermarker(keystore=KeyStore(bytes(range(32))),
+                         language="zh", codec_mode="default")
         text = SAMPLE_TEXTS[0]
         r = wm.embed(text, user_id=42)
         assert r.codec_mode == "default"

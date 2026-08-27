@@ -40,6 +40,7 @@ scripts/embed_files.sh <文件路径> [更多文件...]
 | `AAWM_LANGUAGE` | 否 | `auto`/`zh`/`en`，默认 `auto` |
 | `AAWM_CODEC` | 否 | `zero_cost`/`default`/`hybrid`，默认 `zero_cost`（零感，高自然） |
 | `AAWM_SUPPLEMENTARY_DICT` | 否 | 补充词典 JSON 路径（hybrid 模式；给出且未设 `AAWM_CODEC` 时自动用 `hybrid`）。**溯源时须设同一份**，否则 codec 重建不一致会漏检。词条质量铁律见 §4 |
+| `AAWM_METAS_DIR` | 推荐 | meta 统一归档目录：本地 meta 缺失时 `trace_file.sh` 自动用 `aawm find-meta` 在归档中反查（递归 `*.meta.json` 与 `*.jsonl` salt-archive） |
 | `AAWM_CALIB` | **生产必配** | p0/null 标定语料路径（目录或文件）。**未标定时存在性阈值偏严**（默认 `1.0+1.6×带数`，约 7.4），短文本可能检不出；标定后阈值按实测 null 分布（约 1.0/带），检出可靠。建议用与交付物同领域、**不含交付物本身**的正常文本 |
 
 ### 2. 溯源检测
@@ -60,8 +61,9 @@ aawm find-meta <可疑文件> <meta目录或glob> --key key.json --registry regi
 ```
 
 - 两级策略：① **段落哈希匹配（免密钥）**——seal 里的 `para_hashes` 是段落文本的纯 SHA256，逐段比对交集即可锁定存档（文本被部分改写也能靠未改段落命中）；② **信道 B 验证**——用每份 meta 的 salt+bands 解码，检出 UID + 匹配用户 + 篡改判定
-- 候选参数支持：目录（递归 `*.meta.json`）、glob 模式、单个文件，可多个
+- 候选参数支持：目录（递归 `*.meta.json` + proxy salt-archive `*.jsonl`）、glob 模式、单个文件，可多个
 - hybrid 嵌入的文件需同时传 `--supplementary-dict`（与嵌入时同一份）
+- 设置 `AAWM_METAS_DIR` 后 `trace_file.sh` 会在本地 meta 缺失时自动走归档反查
 - **运维建议**：所有交付的 meta 统一归档到一个目录（如 `metas/`），find-meta 一条命令全量扫描
 
 ### 3. 身份与密钥初始化（首次使用）

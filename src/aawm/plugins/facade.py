@@ -175,14 +175,15 @@ class Watermarker:
         registry: Optional[UIDRegistry] = None,
         language: str = "auto",
         thresholds: Optional[DetectionThresholds] = None,
-        codec_mode: str = "default",
+        codec_mode: str = "zero_cost",
         supplementary_dict: Optional[Dict[str, List[str]]] = None,
         calibrate_corpus: Optional[List[str]] = None,
     ) -> None:
         """Args:
             codec_mode: 中文 codec 模式。
-                "default"  — 全词林 GreenlistCodec（旧行为，向后兼容）
-                "zero_cost"— 零感词典（136 组高自然替换，推荐）
+                "zero_cost"— 零感词典（136 组高自然替换，默认，推荐）
+                "default"  — 全词林 GreenlistCodec（旧行为，病句率高，
+                              不推荐；显式传入以兼容旧部署）
                 "hybrid"   — 零感打底 + supplementary_dict 补带
             supplementary_dict: hybrid 模式的补充词典 {组名: [词列表]}
             calibrate_corpus: 无水印参考语料，构建 codec 时标定 p0
@@ -507,6 +508,20 @@ class Watermarker:
             report = codec.detect(text)
             uid_dec = report.uid
             active, capacity, eff_bits = [], 0, 0
+            # 兜底：有正确盐但缺 bands 元数据（adaptive 嵌入、meta 散失）
+            # 时非自适应路径会漏检——用文本自身活动带重试自适应检测。
+            # 注：嵌入若留了冗余带（n_bits<容量），UID 位空间不同，
+            # 解码可能失真——始终优先用存档 meta。
+            if (session_salt is not None
+                    and report.existence_score
+                    < self._compute_threshold(report.n_dict_words)):
+                uid_ad, active_ad, rep_ad = codec.detect_adaptive(text, None)
+                if rep_ad.bands and rep_ad.existence_score >= \
+                        self._compute_threshold_adaptive(rep_ad):
+                    adaptive = True
+                    uid_dec, active, report = uid_ad, active_ad, rep_ad
+                    capacity = len(active_ad)
+                    eff_bits = n_bits if n_bits is not None else capacity
 
         # 存在性判定：自适应阈值（自适应路径用带数线性模型）
         if adaptive:

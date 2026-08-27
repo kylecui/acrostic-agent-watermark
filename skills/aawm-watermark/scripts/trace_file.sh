@@ -13,9 +13,14 @@
 #   AAWM_SUPPLEMENTARY_DICT  补充词典 JSON（hybrid 嵌入的文件溯源时必配，
 #                            须与嵌入时同一份；否则 codec 重建不一致漏检）
 #   AAWM_CALIB               标定语料（须与嵌入时一致，提升存在性判定）
+#   AAWM_METAS_DIR           meta 统一归档目录：本地 meta 缺失时自动用
+#                            `aawm find-meta` 在归档中反查（目录递归
+#                            *.meta.json 与 *.jsonl salt-archive）
 #
 # 行为:
-#   - 自动读取 <文件>.meta.json 作为 salt/seal/bands 输入；meta 缺失时盲检
+#   - 自动读取 <文件>.meta.json 作为 salt/seal/bands 输入
+#   - 本地 meta 缺失且设了 AAWM_METAS_DIR → find-meta 归档反查
+#   - 两者都无 → 盲检（大概率漏检，见输出提示）
 #   - 直接透传 aawm trace 的可读输出
 #   - 任一文件检出 → 退出码 0；全部未检出 → 退出码 2
 set -u
@@ -66,16 +71,33 @@ resolve_file() {
     return 1
 }
 
-# 查找 <输入>.meta.json：字面量存在直接用；否则 glob 兜底（取第一个）
+# 查找输入文件对应的 meta：
+#   约定名 = 替换扩展名（a.md → a.meta.json，embed 的实际产出）
+#   兼容追加式（a.md → a.md.meta.json）
+# 找不到约定名时绝不盲取目录里任意 meta——多份候选会造成码本不一致
+# （实测解出乱码 UID）。唯一一份时可用；多份时交给 METAS_DIR 反查。
 find_meta() {
-    local f="$1" m literal
-    literal="${f}.meta.json"
-    [ -f "$literal" ] && { echo "$literal"; return 0; }
-    local d
+    local f="$1" m literal base d stem
+    base="${f%.*}"
+    for literal in "${base}.meta.json" "${f}.meta.json"; do
+        [ -f "$literal" ] && { echo "$literal"; return 0; }
+    done
     d="$(dirname "$f")"
-    for m in "$d"/*.meta.json; do
+    stem="$(basename "$base")"
+    for m in "$d/$stem".meta.json "$d/$stem".*.meta.json; do
         [ -f "$m" ] && { echo "$m"; return 0; }
     done
+    # 兜底：目录里唯一一份 meta 才敢用
+    local n=0 only=""
+    for m in "$d"/*.meta.json; do
+        if [ -f "$m" ]; then
+            n=$((n+1)); only="$m"
+        fi
+    done
+    if [ "$n" -eq 1 ]; then
+        echo "$only"
+        return 0
+    fi
     return 1
 }
 
@@ -160,12 +182,24 @@ for f in "${files[@]}"; do
     echo "===== 溯源: $f ====="
     f_norm="$(norm_path "$f")"
     local_args=()
-    local_meta="$(find_meta "$f")" && \
+    if local_meta="$(find_meta "$f")"; then
         local_args+=(--meta "$(norm_path "$local_meta")")
-
-    # shellcheck disable=SC2086
-    "${AAWM_BIN[@]}" trace "$f_norm" "${local_args[@]}" "${COMMON_ARGS[@]}"
-    rc=$?
+        # shellcheck disable=SC2086
+        "${AAWM_BIN[@]}" trace "$f_norm" "${local_args[@]}" "${COMMON_ARGS[@]}"
+        rc=$?
+    elif [ -n "${AAWM_METAS_DIR:-}" ]; then
+        # 本地 meta 缺失 → 在归档目录中反查（段哈希 + 信道 B）
+        echo "（本地无 meta，用 AAWM_METAS_DIR 归档反查）"
+        # shellcheck disable=SC2086
+        "${AAWM_BIN[@]}" find-meta "$f_norm" "$(norm_path "$AAWM_METAS_DIR")" \
+            "${COMMON_ARGS[@]}"
+        rc=$?
+    else
+        # 盲检（大概率漏检）
+        # shellcheck disable=SC2086
+        "${AAWM_BIN[@]}" trace "$f_norm" "${COMMON_ARGS[@]}"
+        rc=$?
+    fi
     if [ $rc -eq 0 ]; then
         any_hit=1
     fi
@@ -174,10 +208,16 @@ done
 
 [ "$any_hit" -eq 1 ]
 rc=$?
-if [ $rc -ne 0 ] && [ -z "${AAWM_CALIB:-}" ]; then
+if [ $rc -ne 0 ]; then
     echo "" >&2
-    echo "提示: 未检出，且未设置 AAWM_CALIB（p0/null 标定语料）。" >&2
-    echo "      未标定时存在性阈值偏严，短文本可能漏检；" >&2
-    echo "      配置标定语料后重试更可靠。见技能包 README §快速开始。" >&2
+    if [ -z "${AAWM_METAS_DIR:-}" ]; then
+        echo "提示: 未检出，且未设置 AAWM_METAS_DIR（meta 统一归档目录）。" >&2
+        echo "      错误/缺失 meta 会导致码本不一致而漏检；" >&2
+        echo "      设置归档目录后重试可自动反查。另建议配置 AAWM_CALIB。" >&2
+    elif [ -z "${AAWM_CALIB:-}" ]; then
+        echo "提示: 未检出，且未设置 AAWM_CALIB（p0/null 标定语料）。" >&2
+        echo "      未标定时存在性阈值偏严，短文本可能漏检；" >&2
+        echo "      配置标定语料后重试更可靠。见技能包 README §快速开始。" >&2
+    fi
 fi
 exit $rc

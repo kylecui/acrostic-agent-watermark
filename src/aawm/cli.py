@@ -175,28 +175,13 @@ def _cmd_embed(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------------
 
 def _load_meta(path: str) -> dict:
-    """加载 meta JSON，返回 {salt, seal, bands, n_bits, raw}。缺项为 None。"""
-    from aawm.binding import BindingSeal
-    raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    salt = bytes.fromhex(raw["session_salt"]) if "session_salt" in raw else None
-    seal = None
-    if "seal" in raw:
-        seal = BindingSeal(
-            merkle_root=bytes.fromhex(raw["seal"]["merkle_root"]),
-            para_hashes=[bytes.fromhex(h) for h in raw["seal"]["para_hashes"]],
-            aad=bytes.fromhex(raw["seal"]["aad"]),
-            version=raw["seal"]["version"],
-        )
-    bands = list(raw["bands"]) if raw.get("bands") else None
-    n_bits = raw.get("n_bits") if bands else None
-    return {"salt": salt, "seal": seal, "bands": bands,
-            "n_bits": n_bits, "raw": raw}
+    """加载 meta JSON 文件，返回 {salt, seal, bands, n_bits, raw}。缺项为 None。"""
+    return _meta_from_raw(json.loads(Path(path).read_text(encoding="utf-8")))
 
 
 def _cmd_trace(args: argparse.Namespace) -> int:
     ks = KeyStore.from_any(key_file=args.key, master_key=args.key_hex)
     reg = UIDRegistry(backend="file", path=args.registry) if args.registry else None
-    wm = _make_watermarker(args, ks, reg)
 
     text = _read_input(args.input)
 
@@ -213,6 +198,17 @@ def _cmd_trace(args: argparse.Namespace) -> int:
         seal = m["seal"]
         bands = m["bands"]
         n_bits = m["n_bits"]
+        # 未显式指定 codec-mode 时优先采用 meta 记录的模式（嵌入时的
+        # 真实模式），避免 CLI 默认值覆盖导致码本不一致漏检
+        meta_codec = m["raw"].get("codec_mode")
+        if getattr(args, "codec_mode", None) is None and meta_codec:
+            args.codec_mode = meta_codec
+        if (meta_codec == "hybrid"
+                and not getattr(args, "supplementary_dict", None)):
+            print("警告: 该 meta 为 hybrid 嵌入但未传 --supplementary-dict，"
+                  "codec 重建不一致将漏检", file=sys.stderr)
+
+    wm = _make_watermarker(args, ks, reg)
 
     trace = wm.trace(text, session_salt=session_salt, seal=seal,
                      bands=bands, n_bits=n_bits)
@@ -242,13 +238,13 @@ def _cmd_trace(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------------
 
 def _resolve_meta_candidates(patterns: List[str]) -> List[Path]:
-    """展开候选 meta：目录→递归 *.meta.json；通配符→glob；否则当文件。"""
+    """展开候选 meta：目录→递归 *.meta.json + *.jsonl；通配符→glob；否则当文件。"""
     out: List[Path] = []
     seen = set()
     for pat in patterns:
         p = Path(pat)
         if p.is_dir():
-            files = sorted(p.rglob("*.meta.json"))
+            files = sorted(p.rglob("*.meta.json")) + sorted(p.rglob("*.jsonl"))
         elif any(ch in pat for ch in "*?["):
             files = [Path(x) for x in sorted(glob.glob(pat, recursive=True))]
         else:
@@ -259,6 +255,49 @@ def _resolve_meta_candidates(patterns: List[str]) -> List[Path]:
                 seen.add(key)
                 out.append(f)
     return out
+
+
+def _meta_from_raw(raw: dict) -> dict:
+    """从 meta JSON 字典提取解码要素。缺项为 None。"""
+    from aawm.binding import BindingSeal
+    salt = bytes.fromhex(raw["session_salt"]) if raw.get("session_salt") else None
+    seal = None
+    if raw.get("seal"):
+        seal = BindingSeal(
+            merkle_root=bytes.fromhex(raw["seal"]["merkle_root"]),
+            para_hashes=[bytes.fromhex(h) for h in raw["seal"]["para_hashes"]],
+            aad=bytes.fromhex(raw["seal"]["aad"]),
+            version=raw["seal"]["version"],
+        )
+    bands = list(raw["bands"]) if raw.get("bands") else None
+    n_bits = raw.get("n_bits") if bands else None
+    return {"salt": salt, "seal": seal, "bands": bands,
+            "n_bits": n_bits, "raw": raw}
+
+
+def _iter_candidate_records(paths: List[Path]):
+    """产出 (标签, meta_dict)。
+
+    .jsonl（proxy salt-archive，每行一条）展开为逐行候选，
+    标签带行号；其余按单份 meta.json 解析。
+    """
+    for p in paths:
+        try:
+            if p.suffix == ".jsonl":
+                for i, line in enumerate(
+                        p.read_text(encoding="utf-8").splitlines(), 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield f"{p}:{i}", _meta_from_raw(json.loads(line))
+                    except (ValueError, KeyError, json.JSONDecodeError):
+                        print(f"跳过无法解析的记录: {p}:{i}", file=sys.stderr)
+            else:
+                yield str(p), _meta_from_raw(
+                    json.loads(p.read_text(encoding="utf-8")))
+        except OSError as e:
+            print(f"跳过无法读取的 meta: {p} ({e})", file=sys.stderr)
 
 
 def _cmd_find_meta(args: argparse.Namespace) -> int:
@@ -284,29 +323,25 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
         print("未找到候选 meta 文件", file=sys.stderr)
         return 1
 
-    ranked = []  # (overlap, n_archived, path, meta)
-    for mp in candidates:
-        try:
-            m = _load_meta(str(mp))
-        except (OSError, ValueError, KeyError, json.JSONDecodeError):
-            print(f"跳过无法解析的 meta: {mp}", file=sys.stderr)
-            continue
+    ranked = []  # (overlap, n_archived, label, meta)
+    for label, m in _iter_candidate_records(candidates):
         phs = set(m["seal"].para_hashes) if m["seal"] else set()
-        ranked.append((len(text_hashes & phs), len(phs), mp, m))
+        ranked.append((len(text_hashes & phs), len(phs), label, m))
 
     ranked.sort(key=lambda r: -r[0])
 
     print(f"候选 meta: {len(ranked)} 份，嫌疑文本段落数: {len(paras)}")
     print("\n[段落哈希匹配]（免密钥，命中文本中未改写的段落）")
     any_overlap = False
-    for overlap, n_arch, mp, m in ranked[:args.top]:
+    for overlap, n_arch, label, m in ranked[:args.top]:
         if overlap == 0 and any_overlap:
             break
         raw = m["raw"]
+        uid = raw.get("user_id", raw.get("uid", "?"))
         mark = " ← 命中" if overlap else ""
         print(f"  {overlap}/{len(paras)} 段匹配（存档 {n_arch} 段）  "
-              f"UID={raw.get('user_id', '?')} ({raw.get('user_alias', '?')})  "
-              f"{mp}{mark}")
+              f"UID={uid} ({raw.get('user_alias', '?')})  "
+              f"{label}{mark}")
         if overlap:
             any_overlap = True
     if not any_overlap:
@@ -334,7 +369,7 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
     to_try = [r for r in ranked if r[0] > 0] or ranked
     print(f"\n[信道 B 验证]（用各 meta 的 salt+bands 解码，最多试 {args.max_trace} 份）")
     found = None
-    for i, (overlap, _, mp, m) in enumerate(to_try):
+    for i, (overlap, _, label, m) in enumerate(to_try):
         if i >= args.max_trace:
             break
         t = wm_for(m).trace(text, session_salt=m["salt"], seal=m["seal"],
@@ -345,20 +380,20 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
             detail = f" UID=0x{t.uid:04X}"
             if t.user:
                 detail += f" 匹配 {t.user} (汉明距={t.hamming_dist})"
-            found = found or (mp, m, t)
-        print(f"  {mp}: {status}（存在性={t.existence_score:.1f}"
+            found = found or (label, m, t)
+        print(f"  {label}: {status}（存在性={t.existence_score:.1f}"
               f" 置信度={t.confidence:.2f}）{detail}")
 
     if found:
-        mp, m, t = found
-        print(f"\n结论: 匹配 meta = {mp}")
+        label, m, t = found
+        print(f"\n结论: 匹配 meta = {label}")
         print(f"  UID=0x{t.uid:04X}, 用户={t.user or '未匹配'}, "
               f"汉明距={t.hamming_dist}, 置信度={t.confidence:.2f}")
         if t.tampered is not None:
             print(f"  篡改判定: {'是' if t.tampered else '否'}")
             if t.tampered_paragraphs:
                 print(f"  被改段落: {t.tampered_paragraphs}")
-        print(f"  溯源命令: aawm trace <text> --meta \"{mp}\" ...")
+        print(f"  溯源命令: aawm trace <text> --meta \"{label}\" ...")
         return 0
     print("\n结论: 信道 B 未检出（文本被重度改写，或候选中无正确 meta）")
     return 2
@@ -454,7 +489,7 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
 def _make_watermarker(args: argparse.Namespace, ks, reg) -> Watermarker:
     """按 CLI 参数构建 Watermarker（codec_mode / 标定语料 / 补充词典）。"""
     kwargs = {}
-    codec_mode = getattr(args, "codec_mode", None) or "default"
+    codec_mode = getattr(args, "codec_mode", None) or "zero_cost"
     if codec_mode != "default":
         kwargs["codec_mode"] = codec_mode
     calib_path = getattr(args, "calibrate_corpus", None)
@@ -482,10 +517,12 @@ def _make_watermarker(args: argparse.Namespace, ks, reg) -> Watermarker:
 def _add_codec_options(parser: argparse.ArgumentParser) -> None:
     """embed/trace/serve 共用的 codec 选项。"""
     parser.add_argument("--codec-mode", choices=["default", "zero_cost", "hybrid"],
-                        default="zero_cost",
-                        help="中文 codec 模式（zero_cost=零感词典（默认，高自然）；"
+                        default=None,
+                        help="中文 codec 模式（默认 zero_cost；trace 带 --meta "
+                             "且未显式指定时优先采用 meta 记录的模式）。\n"
+                             "zero_cost=零感词典（高自然）；"
                              "hybrid=零感+补充词典（配 --supplementary-dict）；"
-                             "default=全词林旧行为，不推荐——实测病句率高）")
+                             "default=全词林旧行为，不推荐——实测病句率高")
     parser.add_argument("--calibrate-corpus", dest="calibrate_corpus",
                         help="p0/null 标定语料（目录或文件路径）")
     parser.add_argument("--supplementary-dict", dest="supplementary_dict",
@@ -548,7 +585,7 @@ def _make_parser() -> argparse.ArgumentParser:
         "find-meta", help="为嫌疑文本在存档 meta 中查找匹配的一份")
     p_find.add_argument("input", help="输入文件路径（- 表示 stdin）")
     p_find.add_argument("metas", nargs="+",
-                        help="候选 meta：文件路径 / 目录（递归 *.meta.json）/ glob 模式")
+                        help="候选 meta：文件路径 / 目录（递归 *.meta.json 与 *.jsonl salt-archive）/ glob 模式")
     p_find.add_argument("--key", help="密钥文件路径（用于信道 B 验证）")
     p_find.add_argument("--key-hex", dest="key_hex", help="密钥 hex")
     p_find.add_argument("--registry", help="注册库文件路径")

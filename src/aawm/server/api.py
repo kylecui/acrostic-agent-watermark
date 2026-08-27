@@ -93,6 +93,39 @@ class EmbedResponse(BaseModel):
     n_bits: int = 0
 
 
+class FindMetaCandidate(BaseModel):
+    """单份候选存档（与 CLI meta.json / proxy salt-archive JSONL 记录字段一致）。"""
+    session_salt: str  # hex
+    bands: Optional[List[int]] = None
+    n_bits: Optional[int] = None
+    codec_mode: Optional[str] = None
+    seal: Optional[dict] = None
+    label: Optional[str] = None  # 调用方标记（如文件名/行号）
+
+
+class FindMetaRequest(BaseModel):
+    text: str
+    candidates: List[FindMetaCandidate]
+    language: Optional[str] = None
+    max_trace: int = 10  # 信道 B 验证最多尝试的候选数
+
+
+class FindMetaResponse(BaseModel):
+    watermarked: bool
+    matched_index: Optional[int] = None
+    matched_label: Optional[str] = None
+    uid: Optional[int] = None
+    user: Optional[str] = None
+    hamming_dist: int = -1
+    confidence: float = 0.0
+    existence_score: float = 0.0
+    tampered: Optional[bool] = None
+    tampered_paragraphs: List[int] = []
+    # 段哈希匹配（免密钥定位信号）
+    para_overlap: int = 0
+    para_total: int = 0
+
+
 # ----------------------------------------------------------------------
 # app
 # ----------------------------------------------------------------------
@@ -179,6 +212,85 @@ def create_app():
             bands=result.bands,
             capacity=result.capacity,
             n_bits=result.n_bits,
+        )
+
+    @app.post("/v1/find-meta", response_model=FindMetaResponse)
+    async def find_meta(req: FindMetaRequest) -> FindMetaResponse:
+        """为嫌疑文本在候选存档中找出匹配的一份。
+
+        两级策略（与 CLI `aawm find-meta` 一致）：
+        1. 段落哈希匹配（免密钥）：候选 seal.para_hashes 与嫌疑文本
+           段落 SHA256 求交集排序
+        2. 信道 B 验证：逐候选用其 salt+bands 解码（用服务端配置的
+           codec；异模式嵌入的候选仅靠段哈希定位）
+        """
+        if _watermarker is None:
+            raise HTTPException(status_code=503, detail="watermarker not initialized")
+        import hashlib
+        from ..binding import split_paragraphs
+
+        paras = split_paragraphs(req.text)
+        text_hashes = {hashlib.sha256(p.encode("utf-8")).digest() for p in paras}
+
+        ranked = []  # (overlap, index, candidate)
+        for i, cand in enumerate(req.candidates):
+            phs = set()
+            if cand.seal and cand.seal.get("para_hashes"):
+                phs = {bytes.fromhex(h) for h in cand.seal["para_hashes"]}
+            ranked.append((len(text_hashes & phs), i, cand))
+        ranked.sort(key=lambda r: -r[0])
+
+        # 信道 B：优先验证段哈希命中的候选
+        to_try = [r for r in ranked if r[0] > 0] or ranked
+        found = None
+        for k, (overlap, i, cand) in enumerate(to_try):
+            if k >= req.max_trace:
+                break
+            seal = None
+            if cand.seal:
+                from ..binding import BindingSeal
+                seal = BindingSeal(
+                    merkle_root=bytes.fromhex(cand.seal["merkle_root"]),
+                    para_hashes=[bytes.fromhex(h) for h in cand.seal["para_hashes"]],
+                    aad=bytes.fromhex(cand.seal.get("aad", "")),
+                    version=cand.seal.get("version", 1),
+                )
+            t = _watermarker.trace(
+                req.text,
+                session_salt=bytes.fromhex(cand.session_salt),
+                seal=seal,
+                language=req.language,
+                bands=cand.bands,
+                n_bits=cand.n_bits,
+            )
+            if t.watermarked:
+                found = (i, cand, t)
+                break
+
+        if found is None:
+            best_overlap, best_i, best_cand = ranked[0] if ranked else (0, None, None)
+            return FindMetaResponse(
+                watermarked=False,
+                matched_index=best_i if best_overlap > 0 else None,
+                matched_label=best_cand.label if best_overlap > 0 else None,
+                para_overlap=best_overlap,
+                para_total=len(paras),
+            )
+
+        i, cand, t = found
+        return FindMetaResponse(
+            watermarked=True,
+            matched_index=i,
+            matched_label=cand.label,
+            uid=t.uid,
+            user=t.user,
+            hamming_dist=t.hamming_dist,
+            confidence=t.confidence,
+            existence_score=t.existence_score,
+            tampered=t.tampered,
+            tampered_paragraphs=t.tampered_paragraphs,
+            para_overlap=max(r[0] for r in ranked if r[1] == i),
+            para_total=len(paras),
         )
 
     return app

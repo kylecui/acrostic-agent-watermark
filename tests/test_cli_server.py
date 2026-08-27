@@ -215,6 +215,52 @@ class TestCLI:
         assert "篡改判定: 是" in result.stdout
         assert "被改段落: [0]" in result.stdout
 
+    def test_find_meta_jsonl_archive(self, tmp_path):
+        """find-meta：proxy salt-archive JSONL（每行一条）也能反查。"""
+        from tests.test_e2e_integration import _long_zh_text
+
+        key_file = tmp_path / "key.json"
+        self._run_cli("keygen", "--output", str(key_file))
+
+        target = tmp_path / "target.txt"
+        target.write_text(_long_zh_text(), encoding="utf-8")
+        marked = tmp_path / "marked.txt"
+        self._run_cli("embed", str(target), "--key", str(key_file),
+                      "--user", "7", "--codec-mode", "zero_cost",
+                      "-o", str(marked))
+        target_meta = json.loads(
+            marked.with_suffix(".meta.json").read_text(encoding="utf-8"))
+
+        # 干扰行：另一段无关文本的 meta
+        other = tmp_path / "other.txt"
+        other.write_text(LONG_TEXT, encoding="utf-8")
+        other_marked = tmp_path / "other_marked.txt"
+        self._run_cli("embed", str(other), "--key", str(key_file),
+                      "--user", "8", "-o", str(other_marked))
+        other_meta = json.loads(
+            other_marked.with_suffix(".meta.json").read_text(encoding="utf-8"))
+
+        # 模拟 proxy salt-archive：JSONL 每行一条（含 uid 字段名差异）
+        def to_archive_rec(meta):
+            rec = dict(meta)
+            rec["uid"] = rec.pop("user_id")
+            rec["ts"] = 0
+            return rec
+
+        archive = tmp_path / "salts.jsonl"
+        archive.write_text("\n".join(
+            json.dumps(to_archive_rec(m), ensure_ascii=False)
+            for m in (other_meta, target_meta)) + "\n", encoding="utf-8")
+
+        result = self._run_cli(
+            "find-meta", str(marked), str(archive),
+            "--key", str(key_file), "--codec-mode", "zero_cost")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "命中" in result.stdout
+        assert "UID=0x0007" in result.stdout
+        # JSONL 记录标签带行号，正确记录是第 2 行
+        assert "salts.jsonl:2" in result.stdout
+
     def test_embed_trace_stdin(self, tmp_path):
         key_file = tmp_path / "key.json"
         self._run_cli("keygen", "--output", str(key_file))
@@ -350,5 +396,56 @@ class TestServer:
             assert t["active_bands"] >= 1
             assert t["n_bits"] == data["n_bits"]
             assert t["uid"] == 42 & ((1 << data["n_bits"]) - 1)
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_find_meta_endpoint(self, app_client):
+        """find-meta：多候选中锁定正确存档（段哈希 + 信道 B）。"""
+        from aawm.plugins import Watermarker
+        from aawm.server.api import set_watermarker
+        from tests.test_e2e_integration import _long_zh_text
+
+        wm = Watermarker(codec_mode="zero_cost")
+        set_watermarker(wm)
+
+        # 目标存档：zh 文本嵌入（含 seal）
+        r_target = wm.embed(_long_zh_text(), user_id=7)
+        # 干扰存档：英文文本
+        wm_en = Watermarker()
+        r_other = wm_en.embed(LONG_TEXT, user_id=8)
+
+        def cand(result, label):
+            from aawm.binding import split_paragraphs
+            import hashlib as _hl
+            return {
+                "session_salt": result.session_salt.hex(),
+                "bands": result.bands,
+                "n_bits": result.n_bits,
+                "codec_mode": result.codec_mode,
+                "seal": None if result.seal is None else {
+                    "merkle_root": result.seal.merkle_root.hex(),
+                    "para_hashes": [h.hex() for h in result.seal.para_hashes],
+                    "aad": result.seal.aad.hex(),
+                    "version": result.seal.version,
+                },
+                "label": label,
+            }
+
+        _, client = app_client
+        try:
+            resp = await client.post("/v1/find-meta", json={
+                "text": r_target.watermarked_text,
+                "candidates": [
+                    cand(r_other, "other"),
+                    cand(r_target, "target"),
+                ],
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["watermarked"] is True
+            assert data["matched_label"] == "target"
+            assert data["para_overlap"] >= 1
+            assert data["uid"] == 7 & ((1 << r_target.n_bits) - 1)
         finally:
             await client.aclose()
