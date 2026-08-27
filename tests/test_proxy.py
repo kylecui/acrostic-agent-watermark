@@ -44,18 +44,23 @@ LONG_TEXT = (
 
 
 def _make_wm() -> Watermarker:
-    """带注册库（alice→42）的 Watermarker，trace 时可容错匹配用户。"""
+    """带注册库（alice→42）的 Watermarker，trace 时可容错匹配用户。
+
+    测试用通用英文文本（LONG_TEXT），对 zero_cost 零感词典覆盖稀疏——
+    走 default 词林兼容路径验证代理机制（对齐 test_chinese_embed_trace）。
+    """
     reg = UIDRegistry()
     reg.register("alice", uid=ALICE_UID)
-    return Watermarker(keystore=KeyStore(master_key=MASTER_KEY), registry=reg)
+    return Watermarker(keystore=KeyStore(master_key=MASTER_KEY),
+                       registry=reg, codec_mode="default")
 
 
-def _make_client(handler, archive=None) -> TestClient:
+def _make_client(handler, archive=None, wm=None) -> TestClient:
     """MockTransport 上游 + TestClient。archive 可选 salt 归档路径。"""
     transport = httpx.MockTransport(handler)
     async_client = httpx.AsyncClient(transport=transport)
     app = create_proxy_app(
-        _make_wm(),
+        wm or _make_wm(),
         ProxyConfig(
             upstream_openai="http://fake-openai.test",
             upstream_anthropic="http://fake-anthropic.test",
@@ -121,8 +126,13 @@ class TestOpenAIProtocol:
         """中文 adaptive 嵌入：归档含 bands+seal，溯源走完整自适应路径。"""
         from tests.test_e2e_integration import _long_zh_text
 
+        # 中文文本须走 zero_cost 零感词典（_make_wm 的 default 是英文机制测试路径）
+        reg = UIDRegistry()
+        reg.register("alice", uid=ALICE_UID)
+        wm_zh = Watermarker(keystore=KeyStore(master_key=MASTER_KEY),
+                            registry=reg, codec_mode="zero_cost")
         archive = tmp_path / "salts.jsonl"
-        c = _make_client(_openai_json_handler(_long_zh_text()), archive)
+        c = _make_client(_openai_json_handler(_long_zh_text()), archive, wm=wm_zh)
         r = c.post("/v1/chat/completions", json={
             "model": "gpt-4", "messages": [{"role": "user", "content": "hi"}],
         }, headers={"authorization": f"Bearer {ALICE_KEY}"})
@@ -137,8 +147,8 @@ class TestOpenAIProtocol:
         assert rec["seal"]["para_hashes"], "seal 未归档——无法篡改定位/find-meta 反查"
 
         # 用归档 salt+bands 溯源 → 命中 alice 的 UID
-        trace = _make_wm().trace(text, session_salt=_last_salt(archive),
-                                 bands=rec["bands"], n_bits=rec["n_bits"])
+        trace = wm_zh.trace(text, session_salt=_last_salt(archive),
+                            bands=rec["bands"], n_bits=rec["n_bits"])
         assert trace.watermarked and trace.user == "alice"
 
     def test_unmapped_key_passes_through(self):

@@ -95,6 +95,7 @@ class TestCLI:
                 "--key", str(key_file),
                 "--user", "agent-cuiyin",
                 "--registry", str(reg_file),
+                "--codec-mode", "default",  # LONG_TEXT 通用英文→default 兼容路径
                 "-o", str(output_file),
             )
             assert result.returncode == 0
@@ -312,7 +313,7 @@ class TestServer:
         from aawm.plugins import Watermarker
         from aawm.server.api import set_watermarker
 
-        wm = Watermarker()
+        wm = Watermarker(codec_mode="default")  # LONG_TEXT 通用英文→default 兼容路径
         result = wm.embed(LONG_TEXT, user_id=42)
         set_watermarker(wm)
 

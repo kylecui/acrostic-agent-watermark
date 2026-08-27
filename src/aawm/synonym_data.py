@@ -35,6 +35,7 @@ _DEFAULT_ZH_CACHE: Optional[Dict[str, List[str]]] = None
 _DEFAULT_EN_CACHE: Optional[Dict[str, List[str]]] = None
 _ZERO_COST_ZH_CACHE: Optional[Dict[str, List[str]]] = None
 _ZERO_COST_BLOCK_CACHE: Optional[Set[str]] = None
+_ZERO_COST_EN_CACHE: Optional[Dict[str, List[str]]] = None
 
 
 def _load_groups(filename: str) -> Optional[Dict[str, List[str]]]:
@@ -143,6 +144,61 @@ def load_zero_cost_zh_block_words() -> Set[str]:
         else:
             _ZERO_COST_BLOCK_CACHE = set()
     return _ZERO_COST_BLOCK_CACHE
+
+# ---------------------------------------------------------------------------
+# 英文零感词典（2026-08-27 用户方向性决策：英文也要一版 zero_cost）。
+# 拼写变体（美/英）+ 功能副词 + 高自然安全对。数据文件由
+# experiments/gen_en_zero_cost_dict.py 生成；缺失时回退最小核心组。
+# 英文无单字语素误切问题，不需要阻断词表。
+# ---------------------------------------------------------------------------
+
+_ZERO_COST_EN_MINIMAL: Dict[str, List[str]] = {
+    "however": ["however", "nevertheless"],
+    "therefore": ["therefore", "thus"],
+    "additionally": ["additionally", "moreover"],
+    "almost": ["almost", "nearly"],
+    "completely": ["completely", "entirely"],
+    "quickly": ["quickly", "rapidly"],
+    "especially": ["especially", "particularly"],
+    "while": ["while", "whilst"],
+    "among": ["among", "amongst"],
+    "begin": ["begin", "start"],
+    "finish": ["finish", "complete"],
+    "choose": ["choose", "select"],
+    "obtain": ["obtain", "acquire"],
+    "verify": ["verify", "confirm"],
+    "accurate": ["accurate", "precise"],
+    "comprehensive": ["comprehensive", "thorough"],
+    "complex": ["complex", "complicated"],
+    "useful": ["useful", "helpful"],
+    "whole": ["whole", "entire"],
+    "huge": ["huge", "enormous"],
+    "goal": ["goal", "objective"],
+    "outcome": ["outcome", "result"],
+    "factor": ["factor", "element"],
+    "type": ["type", "kind"],
+    "error": ["error", "mistake"],
+}
+
+
+def load_zero_cost_en_dictionary() -> Dict[str, List[str]]:
+    """英文零感词典（拼写变体 + 功能副词 + 高自然安全对）。
+
+    数据文件缺失时回退 _ZERO_COST_EN_MINIMAL（最小可用核心组）。
+    返回 {组首词: [全部词...]}，组键即语义代表、必在组内、全小写。
+    """
+    global _ZERO_COST_EN_CACHE
+    if _ZERO_COST_EN_CACHE is None:
+        path = os.path.join(_DATA_DIR, "en_zero_cost.json")
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                payload = json.load(f)
+            _ZERO_COST_EN_CACHE = {
+                ws[0]: ws for ws in payload["groups"] if len(ws) >= 2
+            }
+        else:
+            _ZERO_COST_EN_CACHE = dict(_ZERO_COST_EN_MINIMAL)
+    return _ZERO_COST_EN_CACHE
 
 # ---------------------------------------------------------------------------
 # 英文原始词典（v0.2 的 _SYNONYMS_RAW 搬迁至此，内容不变）

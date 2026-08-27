@@ -68,6 +68,9 @@ class TraceResponse(BaseModel):
     active_bands: int = 0
     soft_uid: Optional[int] = None
     soft_gap: float = -1.0
+    # v0.10 归因置信度（独立于存在性 confidence）
+    attribution_confidence: float = 0.0
+    attribution_abstain: bool = False
 
 
 class EmbedRequest(BaseModel):
@@ -124,6 +127,9 @@ class FindMetaResponse(BaseModel):
     # 段哈希匹配（免密钥定位信号）
     para_overlap: int = 0
     para_total: int = 0
+    # v0.10 归因置信度：abstain 时 uid/user 置 None（"不可判定"）
+    attribution_confidence: float = 0.0
+    attribution_abstain: bool = False
 
 
 # ----------------------------------------------------------------------
@@ -184,6 +190,8 @@ def create_app():
             active_bands=result.active_bands,
             soft_uid=result.soft_uid,
             soft_gap=result.soft_gap,
+            attribution_confidence=result.attribution_confidence,
+            attribution_abstain=result.attribution_abstain,
         )
 
     @app.post("/v1/embed", response_model=EmbedResponse)
@@ -278,12 +286,16 @@ def create_app():
             )
 
         i, cand, t = found
+        # 归因置信不足（abstain）：输出"不可判定"而非可能错误的 UID/用户。
+        # 这是对抗场景"高置信度错误归因"的产品级修复（VERIFICATION_REPORT）。
+        uid = t.uid if not t.attribution_abstain else None
+        user = t.user if not t.attribution_abstain else None
         return FindMetaResponse(
             watermarked=True,
             matched_index=i,
             matched_label=cand.label,
-            uid=t.uid,
-            user=t.user,
+            uid=uid,
+            user=user,
             hamming_dist=t.hamming_dist,
             confidence=t.confidence,
             existence_score=t.existence_score,
@@ -291,6 +303,8 @@ def create_app():
             tampered_paragraphs=t.tampered_paragraphs,
             para_overlap=max(r[0] for r in ranked if r[1] == i),
             para_total=len(paras),
+            attribution_confidence=t.attribution_confidence,
+            attribution_abstain=t.attribution_abstain,
         )
 
     return app

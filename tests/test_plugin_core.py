@@ -424,7 +424,7 @@ class TestWatermarker:
         assert result.user_alias == "agent-cuiyin"
 
     def test_trace_roundtrip(self):
-        wm = Watermarker()
+        wm = Watermarker(codec_mode="default")  # LONG_TEXT_EN 通用文本→default
         result = wm.embed(LONG_TEXT_EN, user_id=0x1234)
         trace = wm.trace(result.watermarked_text,
                          session_salt=result.session_salt, seal=result.seal)
@@ -448,7 +448,7 @@ class TestWatermarker:
         reg = UIDRegistry()
         reg.register("agent-cuiyin", uid=0x1234)
         reg.register("agent-beta", uid=0x00FF)
-        wm = Watermarker(registry=reg)
+        wm = Watermarker(registry=reg, codec_mode="default")  # 通用英文→default
         result = wm.embed(LONG_TEXT_EN, user_id="agent-cuiyin")
         trace = wm.trace(result.watermarked_text, session_salt=result.session_salt)
         assert trace.watermarked
@@ -466,7 +466,7 @@ class TestWatermarker:
         assert len(trace.tampered_paragraphs) > 0
 
     def test_detect_only(self):
-        wm = Watermarker()
+        wm = Watermarker(codec_mode="default")  # 通用英文→default
         result = wm.embed(LONG_TEXT_EN, user_id=42, rng_seed=42)
         # detect_only 需要传 session_salt（存在性依赖盐派生）
         assert wm.detect_only(result.watermarked_text, session_salt=result.session_salt) is True
@@ -496,7 +496,7 @@ class TestWatermarker:
         assert result_zh.language == "zh"
 
     def test_calibrate_p0(self):
-        wm = Watermarker()
+        wm = Watermarker(codec_mode="default")  # 通用英文→default
         wm.calibrate_p0([LONG_TEXT_EN, LONG_TEXT_EN + " More text here."])
         # 标定后应仍能正常嵌入溯源
         result = wm.embed(LONG_TEXT_EN, user_id=42)
@@ -577,7 +577,7 @@ class TestWatermarkMiddleware:
         test_embed_trace_roundtrip 模式）。
         """
         for attempt in range(5):
-            wm = Watermarker()
+            wm = Watermarker(codec_mode="default")  # LONG_TEXT_EN 通用文本→default
             archived = {}
 
             def on_embed(result, ctx):
