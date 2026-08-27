@@ -87,7 +87,9 @@ class TestAutoGenAdapter:
 
         reg = UIDRegistry(backend="memory")
         reg.register("bob", uid=42)
-        wm = Watermarker(registry=reg)
+        # 此测试验证 adapter 包装机制（文本 LONG_TEXT 为通用英文，对
+        # zero_cost 零感词典覆盖稀疏），显式用 default 词林兼容路径。
+        wm = Watermarker(registry=reg, codec_mode="default")
         archived = {}
 
         def on_embed(result, ctx):

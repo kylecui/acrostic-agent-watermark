@@ -79,8 +79,10 @@ result = wm.embed(agent_output, user_id="agent-cuiyin")
 
 # 事后溯源
 trace = wm.trace(suspect_text, session_salt=result.session_salt)
-if trace.watermarked:
+if trace.watermarked and not trace.attribution_abstain:
     print(f"泄露源自用户 {trace.user} (置信度 {trace.confidence:.2f})")
+elif trace.watermarked:
+    print("检出该文档含水印，但归因置信不足——不可判定具体用户（防对抗误归因）")
 ```
 
 LangChain 适配器（1 行接入）：
@@ -130,9 +132,10 @@ setup_hooks(watermarker, user_id="alice")   # crew.kickoff() 输出自动嵌水�
 
 > 详见 [docs/agent_embedding_guide.md](docs/agent_embedding_guide.md) | [docs/plugin_guide.md](docs/plugin_guide.md) | [docs/api_reference.md](docs/api_reference.md) | [docs/deployment.md](docs/deployment.md) | [docs/cli_agent_proxy_guide.md](docs/cli_agent_proxy_guide.md) | [skills/aawm-watermark](skills/aawm-watermark)
 
-### v0.7 中文零感水印（codec 模式）
+### v0.7+ 零感水印（codec 模式，中英双语）
 
-中文场景默认 `zero_cost` 模式（词典小、嵌入对文本观感几乎无扰动）；需要更大容量时用 `hybrid` 或 `default`：
+中英文默认都走 `zero_cost` 模式（中文零感词典 / 英文拼写变体+功能副词，
+嵌入对文本观感几乎无扰动）；需要更大容量时用 `hybrid` 或 `default`：
 
 ```python
 from aawm.plugins import Watermarker
@@ -141,7 +144,7 @@ from aawm.plugins import Watermarker
 wm = Watermarker(codec_mode="zero_cost",
                  calibrate_corpus=["正常输出文本1", "正常输出文本2", ...])
 
-result = wm.embed(agent_output, user_id=42)
+result = wm.embed(agent_output, user_id=42)  # 语言自动检测，中英均可
 # 发布 result.watermarked_text；存档 session_salt + bands + n_bits
 # （trace 时三者回传，缺 bands 会退化到 default 阈值，检测口径不同）
 
@@ -163,7 +166,10 @@ aawm trace marked.txt --key key.json --meta marked.txt.meta.json \
       --codec-mode zero_cost --calibrate-corpus ./corpus/
 ```
 
-> 容量 < 用户 UID 位数时，解码 UID 为低位截断值（如 42 → 0x000A），这是 k-bit 语义，配合注册库 `--registry` 的 soft_match 可映射回全宽 UID。
+> 英文零感词典对通用文本命中稀疏，容量通常小于中文与 default 词林——
+> 适合 AI 长输出等零感词密度高的场景；极短文本请参考统计行的容量。
+> 容量 < 用户 UID 位数时，解码 UID 为低位截断值（如 42 → 0x000A），
+> 这是 k-bit 语义，配合注册库 `--registry` 的 soft_match 可映射回全宽 UID。
 
 ### v0.4 核心算法 API（底层）
 
@@ -207,9 +213,23 @@ v0.2 API（`Embedder` / `Decoder`，位置索引锚点）仍可用，供对比�
 
 ## 项目状态
 
+✅ **v0.10 对抗归因防御（324 项测试通过）**：
+- **归因置信度 `attribution_confidence`**：`判别力 × 容量充分性`，独立于存在性 confidence——对抗场景最危险的失败模式是"高置信度错误归因"（存在性存活但 UID 解错、仍输出错误用户），由新分数显式编码"归因有多大可能对"
+- **abstain 协议**：`attribution_confidence < 0.5` 时 `attribution_abstain=True`，uid/user 置 None、CLI 退出码 3、server 返回"不可判定"——宁可不说也不说错
+- **软判决默认防御**：`trace(soft_match=True, match_margin_ratio=0.3)` 成为默认（原为关闭）；margin 门限拒绝时不再回退硬解码 UID（那正是"自信地错"的来源）
+- **低容量掩码碰撞兜底**：自适应 k-bit 空间内注册库 UID 掩码碰撞（如 n_bits=6 下 UID 1/65 均 mask 成 1）时归因在数学上不可能对，cap=0 一票否决
+- **标定锚点**：判别力映射基于跨语料实测（错误匹配 gap/√n_dict 上界 ≈0.22，正确匹配均值 0.5~0.7）；`gap_ok_lo=0.4` 保证 margin 门限 0.3 之上仍有归因余量
+- **规划 C**：经验校准曲线（对不同文本长度/攻击强度实测校准 gap→AC 映射）作为持续优化方向
+
+✅ **v0.9 英文零感词典（318 项测试通过）**：
+- **英文 zero_cost 落地**：中英文现在都走零感词典（中文 136 组 / 英文 133 组拼写变体+功能副词+安全对），消除"英文恒走 default 词林"的不对称
+- **按语言独立标定**：null ratio 模型按 `lang_tag` 分别拟合，中英 null 分布不互相污染；`_compute_threshold_adaptive` 增加 m=0 空证据守卫（修复标定下零词典词 null 文本误报）
+- **CLI 对齐**：`embed/trace` 显式传 `codec_mode`（此前英文回退掩盖了显式 default 被吞的问题）
+- **边界**：英文零感词典对通用文本命中稀疏，容量 < default 词林；生产仍需 `--calibrate-corpus`
+
 ✅ **v0.7 中文零感 / 混合词典模式（266 项测试通过）**：
 - **三种 codec 模式**：`default`（全词林，向后兼容）/ `zero_cost`（零感词典）/ `hybrid`（零感打底 + 补充词表补带）
-- **零感词典**：75 组常用双字词（"不仅→不但/不只/不只是"），嵌入对文本观感几乎无扰动
+- **零感词典**：136 组常用双字词（"不仅→不但/不只/不只是"），嵌入对文本观感几乎无扰动
 - **自适应编解码**：`embed_adaptive / detect_adaptive / soft_match_adaptive`，容量按文本活动词自动伸缩
 - **k-bit 容量语义**：UID 编码在 `n_bits` 位空间，容量不足时取低 `n_bits` 位（配合注册库 soft_match 映射回全宽 UID）
 - **embed 自检重试**：嵌入后回验解码 UID + 信号余量 ≥1.5×阈值，自动换盐挑选强信号
@@ -271,7 +291,8 @@ acrostic-agent-watermark/
 │       ├── coding.py          # 信道编码：CRC-8 / 重复码 / 交织重复码 / 汉明(7,4)
 │       ├── greenlist.py       # 绿名单编解码器（信道B：16 带统计溯源；自适应路径）
 │       ├── collocation.py     # v0.7 搭配词约束（boundary_safe 边界稳定性）
-│       ├── data/zh_zero_cost.json  # v0.7 零感词典（75 组双字词）
+│       ├── data/zh_zero_cost.json  # v0.7 零感词典（136 组双字词）
+│       ├── data/en_zero_cost.json  # v0.9 英文零感词典（133 组：拼写变体+副词+安全对）
 │       ├── binding.py         # DocumentBinder（信道A：Merkle-HMAC 段落绑定）
 │       ├── content.py         # 内容寻址锚点 + 句子边界感知
 │       ├── cli.py             # v0.6 CLI 工具（keygen/registry/embed/trace/serve）

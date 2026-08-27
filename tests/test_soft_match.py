@@ -163,7 +163,7 @@ class TestTraceSoftMatch:
         reg = UIDRegistry()
         reg.register("alice", uid=0x1234)
         reg.register("bob", uid=0x5678)
-        wm = Watermarker(registry=reg)
+        wm = Watermarker(registry=reg, codec_mode="default")  # make_text 用 default 词林词
         res = wm.embed(make_text(600, seed=3), user_id="alice")
         t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
                      soft_match=True)
@@ -189,16 +189,18 @@ class TestTraceSoftMatch:
         assert t.uid is None
         assert t.user is None
 
-    def test_trace_soft_default_off_preserves_hard_path(self):
-        """默认（soft_match=False）仍走硬判决路径。"""
+    def test_trace_soft_on_by_default(self):
+        """v0.10 起默认启用软判决：注册库存在时默认走 soft 路径。"""
         reg = UIDRegistry()
         reg.register("alice", uid=0x1234)
-        wm = Watermarker(registry=reg)
+        wm = Watermarker(registry=reg, codec_mode="default")  # make_text 用 default 词林词
         res = wm.embed(make_text(600, seed=4), user_id="alice")
         t = wm.trace(res.watermarked_text, session_salt=res.session_salt)
-        assert t.soft_uid is None          # 未启用软判决
-        assert t.soft_gap == -1.0
-        assert t.user == "alice"           # 硬判决路径正常
+        assert t.soft_uid == 0x1234       # 默认已启用软判决
+        assert t.soft_gap >= 0
+        assert t.user == "alice"
+        assert t.attribution_confidence >= 0.5
+        assert not t.attribution_abstain
 
     def test_trace_soft_without_registry_falls_back(self):
         """无注册库时 soft_match 应安全回退（不抛异常）。"""
@@ -268,7 +270,7 @@ class TestTraceMarginRatio:
         reg = UIDRegistry()
         reg.register("alice", uid=0x1234)
         reg.register("bob", uid=0x5678)
-        wm = Watermarker(registry=reg)
+        wm = Watermarker(registry=reg, codec_mode="default")  # make_text 用 default 词林词
         res = wm.embed(make_text(600, seed=16), user_id="alice")
         # 巨大 ratio：生效阈值远超任何 gap → soft_uid=None，不误指用户
         t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
@@ -277,13 +279,128 @@ class TestTraceMarginRatio:
         assert t.user is None
         assert t.soft_gap >= 0
 
-    def test_trace_ratio_none_compat(self):
-        """match_margin_ratio 默认 None，trace 行为与 v0.7 一致。"""
+    def test_trace_default_ratio_keeps_correct_match(self):
+        """match_margin_ratio 默认 0.3（v0.10）：干净正确匹配仍通过。"""
         reg = UIDRegistry()
         reg.register("alice", uid=0x1234)
-        wm = Watermarker(registry=reg)
+        wm = Watermarker(registry=reg, codec_mode="default")  # make_text 用 default 词林词
         res = wm.embed(make_text(600, seed=17), user_id="alice")
         t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
                      soft_match=True)
         assert t.soft_uid == 0x1234
         assert t.user == "alice"
+        assert not t.attribution_abstain
+
+
+# ---------------------------------------------------------------------------
+# attribution_confidence 归因置信度（v0.10）
+# ---------------------------------------------------------------------------
+
+class TestAttributionConfidence:
+    """归因置信度：对抗场景"高置信度错误归因"的防护。
+
+    attribution_confidence 独立于存在性 confidence，低于
+    attribution_floor（默认 0.5）时置 attribution_abstain=True
+    且 uid/user=None——输出"不可判定"而非可能错误的用户。
+    """
+
+    def test_clean_match_high_confidence(self):
+        reg = UIDRegistry()
+        reg.register("alice", uid=0x1234)
+        wm = Watermarker(registry=reg, codec_mode="default")
+        res = wm.embed(make_text(600, seed=4), user_id="alice")
+        t = wm.trace(res.watermarked_text, session_salt=res.session_salt)
+        assert t.watermarked
+        assert t.user == "alice"
+        assert t.attribution_confidence >= 0.5
+        assert not t.attribution_abstain
+
+    def test_null_text_zero_confidence(self):
+        """未检出 → AC=0、abstain=False、uid=None。"""
+        reg = UIDRegistry()
+        reg.register("alice", uid=0x1234)
+        wm = Watermarker(master_key=bytes(range(32)), registry=reg)
+        # 固定密钥+固定 salt（同 test_trace_soft_abstains_null 的确定性组合）
+        t = wm.trace(make_text(40, seed=2), session_salt=bytes(16),
+                     soft_match=True)
+        assert not t.watermarked
+        assert t.attribution_confidence == 0.0
+        assert not t.attribution_abstain
+        assert t.uid is None
+
+    def test_margin_abstain_sets_uid_none(self):
+        """soft margin 拒绝时 uid 置 None——不回退硬解码（防"自信地错"）。"""
+        reg = UIDRegistry()
+        reg.register("alice", uid=0x1234)
+        reg.register("bob", uid=0x5678)
+        wm = Watermarker(registry=reg, codec_mode="default")
+        res = wm.embed(make_text(600, seed=16), user_id="alice")
+        t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
+                     soft_match=True, match_margin_ratio=100.0)
+        assert t.watermarked
+        assert t.soft_uid is None            # margin 门限拒绝
+        assert t.uid is None                 # 关键：不再回退硬解码 0x1234
+        assert t.user is None
+        assert t.attribution_abstain
+        assert t.attribution_confidence < 0.5
+
+    def test_no_registry_hard_path_keeps_uid(self):
+        """无注册库：无候选对比 → AC=0.5（踩门槛下缘），不清除 uid。"""
+        wm = Watermarker(codec_mode="default")
+        res = wm.embed(make_text(600, seed=5), user_id=42)
+        t = wm.trace(res.watermarked_text, session_salt=res.session_salt)
+        assert t.watermarked
+        assert t.uid is not None
+        assert not t.attribution_abstain
+        assert t.attribution_confidence == 0.5  # hard_no_cands_cap
+
+    def test_hard_path_hamming_confidence(self):
+        """显式软判决关闭：注册库汉明距驱动 AC（dist=0 → 1.0）。"""
+        reg = UIDRegistry()
+        reg.register("alice", uid=0x1234)
+        wm = Watermarker(registry=reg, codec_mode="default")
+        res = wm.embed(make_text(600, seed=6), user_id="alice")
+        t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
+                     soft_match=False)
+        assert t.watermarked
+        assert t.uid == 0x1234
+        assert t.user == "alice"
+        assert t.hamming_dist == 0
+        assert t.attribution_confidence == 1.0
+        assert not t.attribution_abstain
+
+    def test_masked_collision_abstains(self):
+        """低容量掩码碰撞：两用户低 k 位相同 → k-bit 空间不可区分 → abstain。
+
+        复现 VERIFICATION_REPORT 的低容量误解码场景：k 位空间内两用户
+        掩码相同（如 n_bits=6 下 UID 1 与 65 的 1 & 0b111111 == 65 & 0b111111
+        == 1），解出的 k-bit UID 无法区分二者——归因在数学上不可能对，
+        必须由容量项 cap=0 兜底 abstain，否则就是"自信地错"。
+
+        注：不用原始报告的 n_bits=2 + UID 5 场景，因为 n_bits 远小于
+        容量时零感冗余嵌入存在性 margin 天然饱和，embed 自检必不过、
+        trace 漏检 watermarked=False（弱水印固有属性）——测试必须先
+        保证检出水印，才能验证"检出了但不可归因"的 abstain 行为。
+        """
+        from tests.test_e2e_integration import _long_zh_text
+
+        reg = UIDRegistry()
+        reg.register("alice", uid=1)
+        reg.register("bob", uid=65)  # 65 & 0b111111 == 1 & 0b111111 → 掩码碰撞
+        wm = Watermarker(master_key=bytes(range(32)), registry=reg,
+                         language="zh", codec_mode="zero_cost")
+        res = wm.embed(_long_zh_text(), user_id="alice", n_bits=6)
+        assert res.n_bits == 6, f"未按请求容量嵌入: {res.n_bits}"
+
+        # 前提自检：注册库两 UID 在 6-bit 空间确实碰撞
+        mask = (1 << res.n_bits) - 1
+        assert 1 & mask == 65 & mask
+        assert len({u & mask for u in (1, 65)}) == 1
+
+        t = wm.trace(res.watermarked_text, session_salt=res.session_salt,
+                     bands=res.bands, n_bits=res.n_bits)
+        assert t.watermarked                    # 存在性存活（否则测试无效）
+        assert t.attribution_abstain            # 掩码碰撞 → 归因不可靠
+        assert t.uid is None                    # 关键：不输出"可能错"的 UID
+        assert t.user is None
+        assert t.attribution_confidence < 0.5

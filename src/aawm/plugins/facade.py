@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import hashlib
+import math
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple, Union
 
@@ -72,7 +73,15 @@ class TraceResult:
         uid: 解码出的 UID（int），未检出/低置信时为 None
         user: 注册库匹配到的用户别名；None=无匹配或无注册库
         hamming_dist: 与最近邻 UID 的汉明距（-1=无匹配）
-        confidence: 置信度 [0,1]，基于 existence_score 归一化
+        confidence: 存在性置信度 [0,1]，基于 existence_score 归一化。
+            只反映"信号多强"，不反映"UID 解对没有"（对抗场景可能
+            存在性存活但归因错误）——归因可靠性看 attribution_confidence。
+        attribution_confidence: 归因置信度 [0,1]（v0.10）。综合判别力
+            （soft 路径 gap/√n_dict、硬路径汉明距）与容量充分性
+            （自适应 k-bit 空间相对候选数）。低于 attribution_floor
+            （默认 0.5）时 attribution_abstain=True 且 uid/user 置 None。
+        attribution_abstain: 检出水印但归因置信不足（True=uid/user 被
+            置 None，输出"不可判定"而非可能的错误用户）。
         tampered: 信道 A 篡改判定。True=被篡改；False=未篡改；None=无 seal 无法判定
         tampered_paragraphs: 被改段落索引
         band_report: 逐带明细
@@ -102,6 +111,8 @@ class TraceResult:
     capacity: int = 0
     n_bits: int = 0
     active_bands: int = 0
+    attribution_confidence: float = 0.0
+    attribution_abstain: bool = False
 
 
 # ----------------------------------------------------------------------
@@ -137,6 +148,19 @@ class DetectionThresholds:
     # 实测依据：p0 标定后 null Σ|z| ≈ 1.0-1.1/带，marked ≈ 2.0+/带
     adaptive_intercept: float = 1.0
     adaptive_slope: float = 1.6
+    # 归因置信度（v0.10）判定参数。对抗场景最危险失败模式是"高置信度
+    # 错误归因"——存在性存活但 UID 解错，仍输出错误用户结论。因此
+    # attribution_confidence 独立于存在性 confidence，专门编码
+    # "归因结果有多大可能对"，不足时 abstain（uid=None）。
+    # 判别力标定锚点来自 exp_margin_scale/exp_margin_ratio 跨语料实测：
+    #   错误匹配 gap/√n_dict 上界 ≈ 0.22，正确匹配均值 0.5~0.7
+    #   （短文本/稀疏命中的干净匹配可低至 ~0.35，故 ok_lo 取 0.4——
+    #   保证 margin 门限(0.3)之上仍有归因余量）
+    attribution_floor: float = 0.5    # AC < 此值 → abstain（uid=None）
+    gap_error_hi: float = 0.22        # gap/√n_dict ≤ 此值视为错误区间
+    gap_ok_lo: float = 0.4            # gap/√n_dict ≥ 此值视为可靠区间
+    capacity_full_width: int = 16     # 自适应 k-bit 空间相对全宽 UID 的参考宽度
+    hard_no_cands_cap: float = 0.5    # 无候选对比（无注册库）时的判别力上限
 
 
 # ----------------------------------------------------------------------
@@ -180,8 +204,9 @@ class Watermarker:
         calibrate_corpus: Optional[List[str]] = None,
     ) -> None:
         """Args:
-            codec_mode: 中文 codec 模式。
-                "zero_cost"— 零感词典（136 组高自然替换，默认，推荐）
+            codec_mode: codec 模式（中英双语生效；v0.9 起英文也有零感词典）。
+                "zero_cost"— 零感词典（中文 136 组 / 英文拼写变体+副词+安全对，
+                              默认，推荐）
                 "default"  — 全词林 GreenlistCodec（旧行为，病句率高，
                               不推荐；显式传入以兼容旧部署）
                 "hybrid"   — 零感打底 + supplementary_dict 补带
@@ -219,15 +244,16 @@ class Watermarker:
         self._p0_calibrated: Dict[bytes, bool] = {}
 
         # null 存在性模型（自适应路径阈值标定）：
-        # (每带均值 ratio, 阈值 ratio) — Σ|z|/m ≈ ratio·N(μ, σ)
-        # 阈值 = m × (μ + 2.5σ)。m = 活动带数。
-        # 仅当提供 calibrate_corpus 且中文自适应模式时计算
-        self._null_model: Optional[Tuple[float, float]] = None
+        # {lang_tag: (每带均值 ratio, 阈值 ratio)} — Σ|z|/m ≈ ratio·N(μ, σ)
+        # 阈值 = m × (μ + 3σ)。m = 活动带数。
+        # 仅当提供 calibrate_corpus 且非 default 模式时按语言分别计算
+        self._null_model: Dict[bytes, Tuple[float, float]] = {}
         if calibrate_corpus and codec_mode != "default":
-            self._fit_null_model(calibrate_corpus)
+            self._fit_null_model(calibrate_corpus, b"zh")
+            self._fit_null_model(calibrate_corpus, b"en")
 
-    def _fit_null_model(self, corpus: List[str]) -> None:
-        """在 null 语料上拟合存在性阈值模型（自适应路径专用）。
+    def _fit_null_model(self, corpus: List[str], lang_tag: bytes) -> None:
+        """在 null 语料上拟合存在性阈值模型（自适应路径专用，按语言）。
 
         每带归一化 ratio 模型：对每篇 null 文本用多个不同 salt 的
         codec 检测（min_n=1），收集每带平均得分 r = Σ|z|/m（m=活动带数），
@@ -239,10 +265,12 @@ class Watermarker:
         - ratio 归一化：每带均值跨 m 稳定，避免线性回归在标定语料
           m 散布窄时外推失稳（实测线性模型 FP 1/30~13/30，
           ratio 模型 0/30 且 marked/null ratio 分离 4 倍以上）。
+        - 语言独立：中英文 codec 词典不同，null 得分分布不同，须按
+          语言_tag 分别拟合（语料只有单一语言时另一语言条目保持空）。
         """
         ratios: List[float] = []
         for _ in range(5):  # 5 个 salt：σ 覆盖 salt 间方差
-            codec = self._build_codec(generate_session_salt(), b"zh")
+            codec = self._build_codec(generate_session_salt(), lang_tag)
             for t in corpus:
                 rep = codec.detect(t, min_n=1)
                 m = sum(1 for st in rep.bands if st.has_signal)
@@ -257,7 +285,7 @@ class Watermarker:
             sd = 0.1  # 完全同质语料：给保守余量
         # 3σ（非 2.5σ）：标定语料有限时 σ 本身仍是低估的，
         # 且 marked/null ratio 分离 4 倍以上，宽阈值无漏检代价
-        self._null_model = (mu, mu + 3.0 * sd)
+        self._null_model[lang_tag] = (mu, mu + 3.0 * sd)
 
     # ------------------------------------------------------------------
     # codec 构建
@@ -266,24 +294,39 @@ class Watermarker:
     def _build_codec(self, session_salt: bytes, lang_tag: bytes) -> GreenlistCodec:
         """按 codec_mode 与语言构建 codec。
 
-        default 模式或英文 → 旧 GreenlistCodec 默认构造（向后兼容）；
-        zero_cost/hybrid + 中文 → 零感/混合 codec。
+        default 模式 → 默认词典词林（中/英各自，向后兼容）；
+        zero_cost + 中文 → 中文零感词典；zero_cost + 英文 → 英文零感
+        词典（拼写变体 + 功能副词）；hybrid → 零感打底 + 补充词典。
         """
-        if lang_tag != b"zh" or self._codec_mode == "default":
+        if self._codec_mode == "default":
             return GreenlistCodec(self._master_key, session_salt,
                                   language_tag=lang_tag)
-        if self._codec_mode == "zero_cost":
-            from ..greenlist import build_zero_cost_zh_codec
-            return build_zero_cost_zh_codec(
+        if lang_tag == b"zh":
+            if self._codec_mode == "zero_cost":
+                from ..greenlist import build_zero_cost_zh_codec
+                return build_zero_cost_zh_codec(
+                    self._master_key, session_salt,
+                    calibrate_corpus=self._calibrate_corpus)
+            # hybrid
+            if self._supplementary_dict is None:
+                raise ValueError("hybrid 模式需要 supplementary_dict")
+            from ..greenlist import build_hybrid_zh_codec
+            return build_hybrid_zh_codec(
                 self._master_key, session_salt,
+                supplementary_dict=self._supplementary_dict,
                 calibrate_corpus=self._calibrate_corpus)
-        # hybrid
-        if self._supplementary_dict is None:
-            raise ValueError("hybrid 模式需要 supplementary_dict")
-        from ..greenlist import build_hybrid_zh_codec
-        return build_hybrid_zh_codec(
+        # 英文 + zero_cost/hybrid → 英文零感词典路径
+        if self._codec_mode == "hybrid":
+            if self._supplementary_dict is None:
+                raise ValueError("hybrid 模式需要 supplementary_dict")
+            from ..greenlist import build_hybrid_en_codec
+            return build_hybrid_en_codec(
+                self._master_key, session_salt,
+                supplementary_dict=self._supplementary_dict,
+                calibrate_corpus=self._calibrate_corpus)
+        from ..greenlist import build_zero_cost_en_codec
+        return build_zero_cost_en_codec(
             self._master_key, session_salt,
-            supplementary_dict=self._supplementary_dict,
             calibrate_corpus=self._calibrate_corpus)
 
     # ------------------------------------------------------------------
@@ -296,7 +339,7 @@ class Watermarker:
         key_file: Optional[str] = None,
         registry_file: Optional[str] = None,
         language: str = "auto",
-        codec_mode: str = "default",
+        codec_mode: str = "zero_cost",
         supplementary_dict: Optional[Dict[str, List[str]]] = None,
         calibrate_corpus: Optional[List[str]] = None,
     ) -> "Watermarker":
@@ -306,7 +349,9 @@ class Watermarker:
             key_file: 密钥文件路径（不存在则自动创建）
             registry_file: 注册库文件路径（None=纯内存）
             language: 默认语言 "en"/"zh"/"auto"
-            codec_mode: 中文 codec 模式（default/zero_cost/hybrid）
+            codec_mode: codec 模式（default/zero_cost/hybrid，默认 zero_cost，
+                与 __init__ 默认一致——此前 from_config 默认 default 会静默
+                走词林，用户以为拿到零感）
             supplementary_dict: hybrid 模式补充词典
             calibrate_corpus: p0 标定语料
         """
@@ -344,7 +389,7 @@ class Watermarker:
             rng_seed: 随机种子（None=不固定；指定后同 text+salt+uid+seed 确定性嵌入）
             n_bits: 自适应模式编码位数（None=满容量 k；<k 留冗余带抗替换）
 
-        自适应模式（zero_cost/hybrid + 中文）注意：
+        自适应模式（zero_cost/hybrid，中英文一致）注意：
             UID 实际编码在 n_bits 位空间——user_id 超出时取低 n_bits 位
             （容量自适应的固有约束；检测时注册库候选同样按低 n_bits 位匹配）。
             result.bands 必须存档，trace 时传入。
@@ -369,9 +414,9 @@ class Watermarker:
             import random
             rng = random.Random(rng_seed)
 
-        # 4. 信道 B 嵌入（中文 + zero_cost/hybrid → 自适应路径）
+        # 4. 信道 B 嵌入（zero_cost/hybrid → 自适应路径，中英文一致）
         codec = self._build_codec(session_salt, lang_tag)
-        adaptive = lang_tag == b"zh" and self._codec_mode != "default"
+        adaptive = self._codec_mode != "default"
 
         if adaptive:
             # 自检重试（自动盐时换 salt，组颜色+带映射全变）：
@@ -398,7 +443,7 @@ class Watermarker:
                 marked, bands = codec.embed_adaptive(
                     text, uid_eff, n_bits=eff_bits, bias=bias, rng=rng)
                 uid_chk, _, report = codec.detect_adaptive(marked, bands, min_n=1)
-                threshold = self._compute_threshold_adaptive(report)
+                threshold = self._compute_threshold_adaptive(report, lang_tag)
                 margin = report.existence_score / threshold if threshold > 0 else float("inf")
                 uid_ok = uid_chk == uid_eff
                 cand = (honor, uid_ok, margin, marked, bands, report,
@@ -454,9 +499,9 @@ class Watermarker:
         session_salt: Optional[bytes] = None,
         seal: Optional[BindingSeal] = None,
         language: Optional[str] = None,
-        soft_match: bool = False,
+        soft_match: bool = True,
         match_margin: float = 2.0,
-        match_margin_ratio: Optional[float] = None,
+        match_margin_ratio: Optional[float] = 0.3,
         bands: Optional[List[int]] = None,
         n_bits: Optional[int] = None,
     ) -> TraceResult:
@@ -467,7 +512,7 @@ class Watermarker:
             session_salt: 会话盐（有则做信道A验证 + 用原盐解码）
             seal: 信道 A 签名（有则验证篡改）
             language: 语言覆盖
-            soft_match: 启用软判决注册库匹配（v0.7 鲁棒性增强）。
+            soft_match: 启用软判决注册库匹配（v0.10 起默认 True）。
                 True 时用逐带 z 打点积分对注册库候选直接打分（min_n=1，
                 弱证据带参与），替代"解码 UID + 汉明最近邻"路径。
                 需注册库非空；否则回退硬判决路径。软匹配结果只在水印
@@ -475,16 +520,17 @@ class Watermarker:
                 区分器，不回答"是否嵌了水印"（null 文本也可能与某候选
                 方向对齐）。
             match_margin: 软判决绝对置信阈值。最优与次优得分差 < margin
-                时视为不可靠（uid=None）。在已嵌入（含受损）文本上
+                时视为不可靠（soft_uid=None）。在已嵌入（含受损）文本上
                 实测 margin=2.0 可把温和攻击下的错误匹配全部转为 abstain。
-            match_margin_ratio: 软判决自适应置信系数（v0.8）。gap 尺度
-                随 √n_dict 增长，固定绝对 margin 对长文本偏松（50% 改写
-                下错误 gap 仍超 2.0，"自信地错"）。给出时生效阈值
-                max(match_margin, ratio·√n_dict)——短文本由绝对项主导、
-                长文本由比例项主导。实测错误匹配 gap/√n_dict 上界跨语料
-                稳定 ≈0.22，正确匹配均值 0.5~0.7，但重度攻击下分布重叠：
-                ratio 是"宁可 abstain 也不错"的权衡旋钮（ratio=0.5 时
-                s50/pku 错误清零，s30 召回 19→8）。None 时纯绝对阈值。
+            match_margin_ratio: 软判决自适应置信系数（v0.8；v0.10 起默认
+                0.3）。gap 尺度随 √n_dict 增长，固定绝对 margin 对长文本
+                偏松（50% 改写下错误 gap 仍超 2.0，"自信地错"）。给出时
+                生效阈值 max(match_margin, ratio·√n_dict)——短文本由绝对项
+                主导、长文本由比例项主导。实测错误匹配 gap/√n_dict 上界
+                跨语料稳定 ≈0.22，正确匹配均值 0.5~0.7，但重度攻击下分布
+                重叠：ratio 是"宁可 abstain 也不错"的权衡旋钮。默认 0.3
+                高于错误上界（压错误）、低于正确均值（保召回）。None 时
+                纯绝对阈值（v0.7 兼容）。
             bands: 嵌入时保存的带集元数据（自适应路径）。传入时走
                 detect_adaptive/soft_match_adaptive（k-bit 空间）。
             n_bits: 嵌入时的编码位数（含冗余）。None 时用 len(bands)。
@@ -516,8 +562,11 @@ class Watermarker:
                     and report.existence_score
                     < self._compute_threshold(report.n_dict_words)):
                 uid_ad, active_ad, rep_ad = codec.detect_adaptive(text, None)
-                if rep_ad.bands and rep_ad.existence_score >= \
-                        self._compute_threshold_adaptive(rep_ad):
+                # active_ad 非空才采纳兜底：null 文本可整句零词典词，
+                # detect_adaptive 返回的空带报告 existence=0、m=0，
+                # 阈值退化 0 会误报（见 _compute_threshold_adaptive 的 m=0 守卫）。
+                if active_ad and rep_ad.existence_score >= \
+                        self._compute_threshold_adaptive(rep_ad, lang_tag):
                     adaptive = True
                     uid_dec, active, report = uid_ad, active_ad, rep_ad
                     capacity = len(active_ad)
@@ -525,7 +574,7 @@ class Watermarker:
 
         # 存在性判定：自适应阈值（自适应路径用带数线性模型）
         if adaptive:
-            threshold = self._compute_threshold_adaptive(report)
+            threshold = self._compute_threshold_adaptive(report, lang_tag)
         else:
             threshold = self._compute_threshold(report.n_dict_words)
         watermarked = report.existence_score >= threshold
@@ -536,6 +585,10 @@ class Watermarker:
         hamming_dist = -1
         soft_uid: Optional[int] = None
         soft_gap = -1.0
+        reg_uids: List[int] = (
+            list(self._registry.list_all())
+            if self._registry is not None else [])
+        soft_engaged = bool(reg_uids) and soft_match
 
         if self._registry is not None and len(self._registry) > 0:
             reg_uids = list(self._registry.list_all())
@@ -565,6 +618,11 @@ class Watermarker:
                     if watermarked and soft_uid is not None:
                         uid = soft_uid
                         user = self._registry.lookup(uid)
+                # 软判决 margin 拒绝（soft_uid=None）：不再回退硬解码 uid。
+                # 攻击下存在性常存活但解码不可靠，硬解码恰恰是"自信地错"
+                # 的来源（VERIFICATION_REPORT 4.2/4.4）——宁可不判定。
+                if watermarked and soft_uid is None:
+                    uid = None
             elif watermarked and uid is not None:
                 match = self._registry.nearest_match(
                     uid, max_hamming=self._thresholds.max_hamming)
@@ -576,8 +634,29 @@ class Watermarker:
                         default=-1,
                     )
 
-        # 置信度
+        # 存在性置信度（只反映信号强度，不反映归因可靠性）
         confidence = min(1.0, report.existence_score / self._thresholds.confidence_scale)
+
+        # 归因置信度（v0.10）：判别力 × 容量充分性。低于门槛 → abstain。
+        # 对抗场景"高置信度错误归因"的根治：存在性存活但归因不可靠时，
+        # 输出"不可判定"而非一个可能错误的具体用户。
+        attribution_confidence = self._compute_attribution_confidence(
+            watermarked=watermarked,
+            soft_engaged=soft_engaged,
+            soft_uid=soft_uid,
+            soft_gap=soft_gap,
+            n_dict_words=report.n_dict_words,
+            hamming_dist=hamming_dist,
+            eff_bits=eff_bits,
+            adaptive=adaptive,
+            reg_uids=reg_uids,
+        )
+        attribution_abstain = False
+        if watermarked and attribution_confidence < self._thresholds.attribution_floor:
+            attribution_abstain = True
+            uid = None
+            user = None
+            hamming_dist = -1
 
         # 信道 A 篡改判定
         tampered = None
@@ -606,7 +685,79 @@ class Watermarker:
             capacity=capacity,
             n_bits=eff_bits if adaptive else 0,
             active_bands=len(active),
+            attribution_confidence=attribution_confidence,
+            attribution_abstain=attribution_abstain,
         )
+
+    def _compute_attribution_confidence(
+        self,
+        *,
+        watermarked: bool,
+        soft_engaged: bool,
+        soft_uid: Optional[int],
+        soft_gap: float,
+        n_dict_words: int,
+        hamming_dist: int,
+        eff_bits: int,
+        adaptive: bool,
+        reg_uids: List[int],
+    ) -> float:
+        """归因置信度 [0,1]（v0.10）。
+
+        对抗场景的失败模式是存在性存活但 UID 解错（"自信地错"），
+        故本分数与存在性 confidence 独立，只回答"归因有多大可能对"：
+
+        1. 判别力项 disc [0,1]：
+           - 软判决路径（默认）：margin 门限已拒绝（soft_uid=None）时
+             归因判定为不可靠，disc=0（门限是权威信号，不因 gap_ratio
+             大而翻盘——match_margin_ratio 拉满时 gap 再大也不可信）。
+             门限放行时用 gap/√n_dict 线性映射。标定锚点来自
+             exp_margin_scale/exp_margin_ratio 跨语料实测——错误匹配
+             gap/√n_dict 上界 ≈0.22，正确匹配均值 0.5~0.7（稀疏命中
+             的干净匹配可低至 ~0.35，故 ok_lo=0.4，与 margin 门限
+             0.3 之间保留归因余量）。gap_ratio ≤ error_hi 得 0，
+             ≥ ok_lo 得 1。
+           - 硬判决路径（显式 soft_match=False + 注册库）：按汉明距
+             线性映射（dist=0→1，dist≥max_hamming→0）。
+           - 无候选对比（无注册库）：无从分辨单次解码的对错，给诚实
+             上限 hard_no_cands_cap（默认 0.5，恰好踩在 abstain 门槛
+             下缘——存在性强时保留 uid，弱时 abstain）。
+        2. 容量项 cap {0,1}：仅自适应 k-bit 空间有意义。注册库 UID
+           mask 到低 eff_bits 位后若有碰撞（两用户低 k 位相同），二者
+           产生的水印在 k-bit 空间不可区分，归因数学上不可能对——
+           cap=0 直接 abstain（如 n_bits=2 下 UID 1 与 5 都 mask 成 1，
+           解出 1≠5 的"自信地错"正是此因）。无碰撞取 1。
+           非自适应路径无 k-bit 截断，恒为 1（中性）。
+
+        总分 = disc × cap。低于 attribution_floor（默认 0.5）时
+        trace 置 attribution_abstain=True 且 uid/user=None。
+        """
+        t = self._thresholds
+        if not watermarked:
+            return 0.0
+
+        # 1. 判别力项
+        if soft_engaged:
+            if soft_uid is None:
+                disc = 0.0  # margin 门限拒绝 → 归因不可靠
+            else:
+                gap_ratio = soft_gap / max(1.0, math.sqrt(max(1, n_dict_words)))
+                disc = min(1.0, max(
+                    0.0,
+                    (gap_ratio - t.gap_error_hi) / (t.gap_ok_lo - t.gap_error_hi)))
+        elif hamming_dist >= 0:
+            disc = min(1.0, max(0.0, 1.0 - hamming_dist / max(1, t.max_hamming)))
+        else:
+            disc = t.hard_no_cands_cap
+
+        # 2. 容量充分性（仅自适应 k-bit 空间）
+        cap = 1.0
+        if adaptive and eff_bits > 0 and reg_uids:
+            mask = (1 << eff_bits) - 1
+            if len({u & mask for u in reg_uids}) < len(reg_uids):
+                cap = 0.0  # 低 k 位碰撞 → k-bit 空间内用户不可区分
+
+        return disc * cap
 
     def _lookup_masked(self, k_uid: int, reg_uids: List[int], mask: int) -> Optional[str]:
         """k-bit UID → 注册库用户（低 n_bits 位匹配；多位命中取最小 UID）。"""
@@ -702,15 +853,23 @@ class Watermarker:
         adaptive = self._thresholds.adaptive_factor * math.sqrt(max(n_dict_words, 1))
         return max(self._thresholds.existence_floor, adaptive)
 
-    def _compute_threshold_adaptive(self, report: BandReport) -> float:
+    def _compute_threshold_adaptive(self, report: BandReport,
+                                    lang_tag: bytes) -> float:
         """自适应路径（zero_cost/hybrid，min_n=1 统计）的存在性阈值。
 
         优先用 null 语料标定的每带 ratio 模型（阈值 = m × 阈值 ratio，
         m = 活动带数），未标定时用 DetectionThresholds 的默认线性常数。
+        中英文分别用各自标定模型（词典不同、null 分布不同）。
         """
         m = sum(1 for st in report.bands if st.has_signal)
-        if self._null_model is not None:
-            _, thr_ratio = self._null_model
+        nm = self._null_model.get(lang_tag)
+        if nm is not None:
+            _, thr_ratio = nm
+            if m == 0:
+                # 零活动带（词典词为零）：空证据不能构成检出。标定 ratio
+                # 模型 0×ratio=0 会退化为 "0>=0 恒真" 误报——英文 null 文本
+                # 可整句无词典词（零感词典覆盖稀疏），实测触发。
+                return self._thresholds.existence_floor
             return m * thr_ratio
         return (self._thresholds.adaptive_intercept
                 + self._thresholds.adaptive_slope * m)

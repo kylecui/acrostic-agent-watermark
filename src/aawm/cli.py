@@ -210,18 +210,26 @@ def _cmd_trace(args: argparse.Namespace) -> int:
 
     wm = _make_watermarker(args, ks, reg)
 
+    trace_kwargs: dict = dict(soft_match=getattr(args, "soft_match", True))
+    ratio = getattr(args, "match_margin_ratio", None)
+    if ratio is not None:
+        trace_kwargs["match_margin_ratio"] = ratio  # 未显式给则用 trace 默认 0.3
     trace = wm.trace(text, session_salt=session_salt, seal=seal,
-                     bands=bands, n_bits=n_bits)
+                     bands=bands, n_bits=n_bits, **trace_kwargs)
 
     # 输出
     print(f"检出水印: {'是' if trace.watermarked else '否'}")
+    if trace.attribution_abstain:
+        print("归因: ⚠ 检出水印但归因置信不足（abstain）——"
+              "不输出 UID/用户，避免错误归因")
     if trace.uid is not None:
         print(f"解码 UID: 0x{trace.uid:04X}")
     if trace.user:
         print(f"匹配用户: {trace.user} (汉明距={trace.hamming_dist})")
     elif reg is not None and trace.uid is not None:
         print(f"匹配用户: 未匹配 (最近邻汉明距={trace.hamming_dist})")
-    print(f"置信度: {trace.confidence:.2f}")
+    print(f"置信度(存在性): {trace.confidence:.2f}")
+    print(f"归因置信度: {trace.attribution_confidence:.2f}")
     print(f"存在性得分: {trace.existence_score:.1f}")
     print(f"词典命中: {trace.n_dict_words}")
     if bands:
@@ -230,7 +238,11 @@ def _cmd_trace(args: argparse.Namespace) -> int:
         print(f"篡改判定: {'是' if trace.tampered else '否'}")
         if trace.tampered_paragraphs:
             print(f"被改段落: {trace.tampered_paragraphs}")
-    return 0 if trace.watermarked else 2
+    if not trace.watermarked:
+        return 2
+    if trace.attribution_abstain:
+        return 3  # 检出水印但无法可靠归因（区别于未检出 2 / 正常检出 0）
+    return 0
 
 
 # ----------------------------------------------------------------------
@@ -372,29 +384,42 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
     for i, (overlap, _, label, m) in enumerate(to_try):
         if i >= args.max_trace:
             break
-        t = wm_for(m).trace(text, session_salt=m["salt"], seal=m["seal"],
-                            bands=m["bands"], n_bits=m["n_bits"])
+        trace_kw: dict = dict(soft_match=getattr(args, "soft_match", True))
+        ratio = getattr(args, "match_margin_ratio", None)
+        if ratio is not None:
+            trace_kw["match_margin_ratio"] = ratio  # 未显式给则用 trace 默认 0.3
+        t = wm_for(m).trace(
+            text, session_salt=m["salt"], seal=m["seal"],
+            bands=m["bands"], n_bits=m["n_bits"], **trace_kw)
         status = "检出" if t.watermarked else "未检出"
         detail = ""
         if t.watermarked:
-            detail = f" UID=0x{t.uid:04X}"
-            if t.user:
-                detail += f" 匹配 {t.user} (汉明距={t.hamming_dist})"
+            if t.attribution_abstain:
+                detail = " ⚠归因置信不足(abstain)"
+            else:
+                detail = f" UID=0x{t.uid:04X}"
+                if t.user:
+                    detail += f" 匹配 {t.user} (汉明距={t.hamming_dist})"
             found = found or (label, m, t)
         print(f"  {label}: {status}（存在性={t.existence_score:.1f}"
-              f" 置信度={t.confidence:.2f}）{detail}")
+              f" 置信度={t.confidence:.2f} 归因={t.attribution_confidence:.2f}）{detail}")
 
     if found:
         label, m, t = found
         print(f"\n结论: 匹配 meta = {label}")
-        print(f"  UID=0x{t.uid:04X}, 用户={t.user or '未匹配'}, "
-              f"汉明距={t.hamming_dist}, 置信度={t.confidence:.2f}")
+        if t.attribution_abstain:
+            print("  归因: ⚠ 检出水印但归因置信不足（abstain），"
+                  "不可判定用户——避免输出可能错误的 UID/用户")
+        else:
+            print(f"  UID=0x{t.uid:04X}, 用户={t.user or '未匹配'}, "
+                  f"汉明距={t.hamming_dist}, 置信度={t.confidence:.2f}")
+        print(f"  归因置信度: {t.attribution_confidence:.2f}")
         if t.tampered is not None:
             print(f"  篡改判定: {'是' if t.tampered else '否'}")
             if t.tampered_paragraphs:
                 print(f"  被改段落: {t.tampered_paragraphs}")
         print(f"  溯源命令: aawm trace <text> --meta \"{label}\" ...")
-        return 0
+        return 3 if t.attribution_abstain else 0
     print("\n结论: 信道 B 未检出（文本被重度改写，或候选中无正确 meta）")
     return 2
 
@@ -490,8 +515,10 @@ def _make_watermarker(args: argparse.Namespace, ks, reg) -> Watermarker:
     """按 CLI 参数构建 Watermarker（codec_mode / 标定语料 / 补充词典）。"""
     kwargs = {}
     codec_mode = getattr(args, "codec_mode", None) or "zero_cost"
-    if codec_mode != "default":
-        kwargs["codec_mode"] = codec_mode
+    # 注意：必须总是显式传 codec_mode——Watermarker 默认 zero_cost，
+    # 若不传则显式 --codec-mode default 会被静默吞掉（英文修复前被
+    # 语言回退掩盖，英文 zero_cost 落地后暴露）
+    kwargs["codec_mode"] = codec_mode
     calib_path = getattr(args, "calibrate_corpus", None)
     if calib_path:
         # 标定语料：目录（全部 .txt/.md）或单文件（UTF-8 文本）
@@ -578,6 +605,11 @@ def _make_parser() -> argparse.ArgumentParser:
     p_trace.add_argument("--language", choices=["en", "zh", "auto"], help="语言")
     p_trace.add_argument("--salt", help="会话盐（hex）")
     p_trace.add_argument("--meta", help="元数据文件（含 salt+seal+bands 的 JSON）")
+    p_trace.add_argument("--no-soft-match", dest="soft_match", action="store_false",
+                         help="关闭软判决注册库匹配（v0.10 起默认开启）")
+    p_trace.add_argument("--match-margin-ratio", dest="match_margin_ratio",
+                         type=float, default=None, metavar="R",
+                         help="软判决自适应置信系数（默认 0.3；None=纯绝对 margin）")
     _add_codec_options(p_trace)
 
     # find-meta
@@ -594,6 +626,11 @@ def _make_parser() -> argparse.ArgumentParser:
                         help="段落哈希排名显示条数")
     p_find.add_argument("--max-trace", dest="max_trace", type=int, default=10,
                         help="信道 B 验证最多尝试的 meta 份数")
+    p_find.add_argument("--no-soft-match", dest="soft_match", action="store_false",
+                        help="关闭软判决注册库匹配（v0.10 起默认开启）")
+    p_find.add_argument("--match-margin-ratio", dest="match_margin_ratio",
+                        type=float, default=None, metavar="R",
+                        help="软判决自适应置信系数（默认 0.3；None=纯绝对 margin）")
     _add_codec_options(p_find)
 
     # serve
