@@ -146,6 +146,75 @@ class TestCLI:
             assert result.returncode == 0, result.stderr
             assert "检出水印: 是" in result.stdout
 
+    def test_find_meta(self, tmp_path):
+        """find-meta：段哈希锁定正确 meta + 信道 B 验证（含干扰 meta）。"""
+        from tests.test_e2e_integration import _long_zh_text
+
+        key_file = tmp_path / "key.json"
+        self._run_cli("keygen", "--output", str(key_file))
+
+        target = tmp_path / "target.txt"
+        target.write_text(_long_zh_text(), encoding="utf-8")
+        marked = tmp_path / "marked.txt"
+        result = self._run_cli(
+            "embed", str(target), "--key", str(key_file),
+            "--user", "7", "--codec-mode", "zero_cost", "-o", str(marked))
+        assert result.returncode == 0, result.stderr
+        target_meta = marked.with_suffix(".meta.json")
+        assert target_meta.exists()
+
+        # 干扰 meta：另一段无关文本
+        other = tmp_path / "other.txt"
+        other.write_text(LONG_TEXT, encoding="utf-8")
+        other_marked = tmp_path / "other_marked.txt"
+        self._run_cli("embed", str(other), "--key", str(key_file),
+                      "--user", "8", "-o", str(other_marked))
+        other_meta = other_marked.with_suffix(".meta.json")
+
+        metas_dir = tmp_path / "metas"
+        metas_dir.mkdir()
+        for m in (target_meta, other_meta):
+            (metas_dir / m.name).write_text(
+                m.read_text(encoding="utf-8"), encoding="utf-8")
+
+        result = self._run_cli(
+            "find-meta", str(marked), str(metas_dir),
+            "--key", str(key_file), "--codec-mode", "zero_cost")
+        assert result.returncode == 0, result.stdout + result.stderr
+        # 段哈希命中正确 meta（排名首位）
+        assert target_meta.name in result.stdout
+        assert "命中" in result.stdout
+        # 信道 B 验证解出 UID
+        assert "UID=0x0007" in result.stdout
+
+    def test_find_meta_tampered(self, tmp_path):
+        """find-meta：文本被改写后仍能锁定 meta 并判定篡改段落。"""
+        from tests.test_e2e_integration import _long_zh_text
+
+        key_file = tmp_path / "key.json"
+        self._run_cli("keygen", "--output", str(key_file))
+
+        target = tmp_path / "target.txt"
+        target.write_text(_long_zh_text(), encoding="utf-8")
+        marked = tmp_path / "marked.txt"
+        self._run_cli("embed", str(target), "--key", str(key_file),
+                      "--user", "7", "--codec-mode", "zero_cost",
+                      "-o", str(marked))
+        meta_file = marked.with_suffix(".meta.json")
+
+        # 改写第一段模拟泄露后被编辑
+        paras = marked.read_text(encoding="utf-8").split("\n\n")
+        paras[0] = paras[0] + "（后被补写的段落）"
+        suspect = tmp_path / "suspect.txt"
+        suspect.write_text("\n\n".join(paras), encoding="utf-8")
+
+        result = self._run_cli(
+            "find-meta", str(suspect), str(meta_file),
+            "--key", str(key_file), "--codec-mode", "zero_cost")
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "篡改判定: 是" in result.stdout
+        assert "被改段落: [0]" in result.stdout
+
     def test_embed_trace_stdin(self, tmp_path):
         key_file = tmp_path / "key.json"
         self._run_cli("keygen", "--output", str(key_file))

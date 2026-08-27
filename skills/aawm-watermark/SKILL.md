@@ -51,6 +51,19 @@ scripts/trace_file.sh <可疑文件> [更多文件...]
 - 自动读取 `<文件>.meta.json` 作为 `salt`/`seal`/`bands` 输入；meta 缺失时盲检
 - 输出：是否检出、解码 UID、匹配用户、置信度、篡改判定
 
+### 2a. 不知道 meta 是哪份时（find-meta）
+
+拿到一篇可疑文本但 meta 存档散落多处/不确定是哪份时（**没有正确 meta，信道 B 会用错误码本解码而漏检**）：
+
+```bash
+aawm find-meta <可疑文件> <meta目录或glob> --key key.json --registry registry.json
+```
+
+- 两级策略：① **段落哈希匹配（免密钥）**——seal 里的 `para_hashes` 是段落文本的纯 SHA256，逐段比对交集即可锁定存档（文本被部分改写也能靠未改段落命中）；② **信道 B 验证**——用每份 meta 的 salt+bands 解码，检出 UID + 匹配用户 + 篡改判定
+- 候选参数支持：目录（递归 `*.meta.json`）、glob 模式、单个文件，可多个
+- hybrid 嵌入的文件需同时传 `--supplementary-dict`（与嵌入时同一份）
+- **运维建议**：所有交付的 meta 统一归档到一个目录（如 `metas/`），find-meta 一条命令全量扫描
+
 ### 3. 身份与密钥初始化（首次使用）
 
 ```bash
@@ -81,7 +94,7 @@ export AAWM_CALIB=/path/to/calib              # 生产必配（见上表）
 ## 原则
 
 - **Fail-open**：嵌入失败绝不破坏交付物、不阻塞流程
-- **元数据是溯源的前提**：`<文件>.meta.json` 与交付文件必须一同归档；脱离 meta 只能盲检（仍可检出 UID，但无 seal 校验）
+- **元数据是溯源的前提**：`<文件>.meta.json` 与交付文件必须一同归档（推荐统一存 `metas/` 目录）；meta 散失时用 `aawm find-meta`（§2a）从归档中反查。脱离正确 meta 的裸检大概率漏检——`session_salt` 决定码本映射，错误盐 = 错误码本
 - **只有密钥方可见水印**：对读者无感，不宣称版权、不声明归属，仅用于事后溯源
 
 ## 限制
