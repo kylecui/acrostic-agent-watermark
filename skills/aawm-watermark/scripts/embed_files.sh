@@ -11,7 +11,10 @@
 #   AAWM_KEY_HEX    密钥 hex。
 #   AAWM_REGISTRY   注册库 JSON 路径（推荐，别名解析与溯源需要）。
 #   AAWM_LANGUAGE   auto|zh|en，默认 auto。
-#   AAWM_CODEC      zero_cost|default|hybrid，默认 zero_cost（零感词典，高自然）。
+#   AAWM_CODEC               zero_cost|default|hybrid，默认 zero_cost（零感词典，高自然）。
+#                            设置了 AAWM_SUPPLEMENTARY_DICT 而 AAWM_CODEC 未设时自动用 hybrid。
+#   AAWM_SUPPLEMENTARY_DICT  补充词典 JSON 路径（hybrid 模式）。词条质量铁律见
+#                            SKILL.md §4——坏词条 = 交付物病句。溯源须配同一份。
 #   AAWM_CALIB      p0/null 标定语料路径（可选，目录或文件）。
 #   AAWM_DRY_RUN    非空时只打印将执行的命令，不真正嵌入。
 #
@@ -51,6 +54,23 @@ norm_path() {
             ;;
         *) echo "$1" ;;
     esac
+}
+
+# ----------------------------------------------------------------------
+# 文件存在性/真实路径解析：Windows Git Bash 对含中文的路径做字面量
+# test（[ -f ]）时因 NFD/NFC 归一化差异会误判"不存在"，但"目录字面量 +
+# ASCII 后缀 glob"（如 某目录/*.md）展开稳定，故用 glob 兜底取真实路径。
+# ----------------------------------------------------------------------
+resolve_file() {
+    local p="$1"
+    [ -e "$p" ] && { echo "$p"; return 0; }
+    local d sfx m
+    d="$(dirname "$p")"
+    sfx=".${p##*.}"
+    for m in "$d"/*"$sfx"; do
+        [ -e "$m" ] && { echo "$m"; return 0; }
+    done
+    return 1
 }
 
 # ----------------------------------------------------------------------
@@ -109,8 +129,21 @@ COMMON_ARGS=()
 [ -n "${AAWM_REGISTRY:-}" ] && COMMON_ARGS+=(--registry "$(norm_path "$AAWM_REGISTRY")")
 [ -n "${AAWM_LANGUAGE:-}" ] && COMMON_ARGS+=(--language "$AAWM_LANGUAGE")
 [ -n "${AAWM_CALIB:-}" ] && COMMON_ARGS+=(--calibrate-corpus "$(norm_path "$AAWM_CALIB")")
-CODEC="${AAWM_CODEC:-zero_cost}"
+
+# 补充词典（hybrid）：给出且 AAWM_CODEC 未设时自动用 hybrid
+SUPP="${AAWM_SUPPLEMENTARY_DICT:-}"
+if [ -n "$SUPP" ] && ! resolve_file "$SUPP" >/dev/null; then
+    echo "错误: AAWM_SUPPLEMENTARY_DICT 指向的文件不存在: $SUPP" >&2
+    exit 1
+fi
+if [ -n "$SUPP" ]; then
+    SUPP="$(resolve_file "$SUPP")"
+    [ -z "${AAWM_CODEC:-}" ] && CODEC="hybrid" || CODEC="$AAWM_CODEC"
+else
+    CODEC="${AAWM_CODEC:-zero_cost}"
+fi
 COMMON_ARGS+=(--codec-mode "$CODEC")
+[ -n "$SUPP" ] && COMMON_ARGS+=(--supplementary-dict "$(norm_path "$SUPP")")
 
 # 未配置标定语料时提示（不阻塞，仅提醒：短文本存在性判定可能不可靠）
 if [ -z "${AAWM_CALIB:-}" ]; then
@@ -128,11 +161,8 @@ skip_ext() {
 }
 
 embed_one() {
-    local f="$1"
-    if [ ! -f "$f" ]; then
-        echo "跳过: $f（文件不存在）" >&2
-        return 0
-    fi
+    local f
+    f="$(resolve_file "$1")" || { echo "跳过: $1（文件不存在）" >&2; return 0; }
     if skip_ext "$f"; then
         echo "跳过: $f（非文本/二进制）" >&2
         return 0

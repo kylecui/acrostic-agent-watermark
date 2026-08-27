@@ -373,6 +373,28 @@ class TestHybridCodec:
         uid_d, _, _ = codec.detect_adaptive(marked, bands)
         assert uid_d == uid
 
+    def test_morpheme_bonus_rejects_initial_only_pairs(self):
+        """仅共享首字的词对不得因语素 bonus 放行（水花/水珠类）。"""
+        from aawm.collocation import (
+            has_shared_morpheme,
+            shares_non_initial_morpheme,
+        )
+
+        # 同类异物：只共享首字 → 旧规则误放行，新规则不给 bonus
+        for a, b in [("水花", "水珠"), ("窗户", "窗棂"), ("信", "信笺")]:
+            assert has_shared_morpheme(a, b)
+            assert not shares_non_initial_morpheme(a, b), (a, b)
+
+        # 同物异名：非首位共享 → 保留 bonus
+        for a, b in [("近邻", "邻居"), ("保持", "维持")]:
+            assert shares_non_initial_morpheme(a, b), (a, b)
+
+        # 无语料时（left/right 全空），坏词对组分应低于 0.3
+        # （首字共享组只能拿 0 分），好词对组拿 0.3
+        empty_left, empty_right = {}, {}
+        assert group_score(["水花", "水珠"], empty_left, empty_right) == 0.0
+        assert group_score(["保持", "维持"], empty_left, empty_right) == 0.3
+
 
 # ======================================================================
 # Facade 级端到端（Watermarker 统一入口）

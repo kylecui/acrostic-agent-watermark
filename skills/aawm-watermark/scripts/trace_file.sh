@@ -10,6 +10,8 @@
 #   AAWM_REGISTRY            注册库 JSON 路径（推荐，输出匹配用户别名）
 #   AAWM_LANGUAGE            默认 auto
 #   AAWM_CODEC               默认 zero_cost（须与嵌入时一致）
+#   AAWM_SUPPLEMENTARY_DICT  补充词典 JSON（hybrid 嵌入的文件溯源时必配，
+#                            须与嵌入时同一份；否则 codec 重建不一致漏检）
 #   AAWM_CALIB               标定语料（须与嵌入时一致，提升存在性判定）
 #
 # 行为:
@@ -45,6 +47,36 @@ norm_path() {
             ;;
         *) echo "$1" ;;
     esac
+}
+
+# ----------------------------------------------------------------------
+# 文件存在性/真实路径解析：Windows Git Bash 对含中文的路径做字面量
+# test（[ -f ]）时因 NFD/NFC 归一化差异会误判"不存在"，但"目录字面量 +
+# ASCII 后缀 glob"（如 某目录/*.md）展开稳定，故用 glob 兜底取真实路径。
+# ----------------------------------------------------------------------
+resolve_file() {
+    local p="$1"
+    [ -e "$p" ] && { echo "$p"; return 0; }
+    local d sfx m
+    d="$(dirname "$p")"
+    sfx=".${p##*.}"
+    for m in "$d"/*"$sfx"; do
+        [ -e "$m" ] && { echo "$m"; return 0; }
+    done
+    return 1
+}
+
+# 查找 <输入>.meta.json：字面量存在直接用；否则 glob 兜底（取第一个）
+find_meta() {
+    local f="$1" m literal
+    literal="${f}.meta.json"
+    [ -f "$literal" ] && { echo "$literal"; return 0; }
+    local d
+    d="$(dirname "$f")"
+    for m in "$d"/*.meta.json; do
+        [ -f "$m" ] && { echo "$m"; return 0; }
+    done
+    return 1
 }
 
 files=()
@@ -90,7 +122,20 @@ COMMON_ARGS=()
 [ -n "${AAWM_REGISTRY:-}" ] && COMMON_ARGS+=(--registry "$(norm_path "$AAWM_REGISTRY")")
 [ -n "${AAWM_LANGUAGE:-}" ] && COMMON_ARGS+=(--language "$AAWM_LANGUAGE")
 [ -n "${AAWM_CALIB:-}" ] && COMMON_ARGS+=(--calibrate-corpus "$(norm_path "$AAWM_CALIB")")
-CODEC="${AAWM_CODEC:-zero_cost}"
+
+# 补充词典（hybrid 溯源必配，与嵌入时同一份）
+SUPP="${AAWM_SUPPLEMENTARY_DICT:-}"
+if [ -n "$SUPP" ] && ! resolve_file "$SUPP" >/dev/null; then
+    echo "错误: AAWM_SUPPLEMENTARY_DICT 指向的文件不存在: $SUPP" >&2
+    exit 1
+fi
+[ -n "$SUPP" ] && SUPP="$(resolve_file "$SUPP")" && \
+    COMMON_ARGS+=(--supplementary-dict "$(norm_path "$SUPP")")
+if [ -z "${AAWM_CODEC:-}" ] && [ -n "$SUPP" ]; then
+    CODEC="hybrid"
+else
+    CODEC="${AAWM_CODEC:-zero_cost}"
+fi
 COMMON_ARGS+=(--codec-mode "$CODEC")
 
 # 跳过非文本扩展名
@@ -104,7 +149,7 @@ skip_ext() {
 
 any_hit=0
 for f in "${files[@]}"; do
-    if [ ! -f "$f" ]; then
+    if ! f="$(resolve_file "$f")"; then
         echo "跳过: $f（文件不存在）" >&2
         continue
     fi
@@ -114,9 +159,9 @@ for f in "${files[@]}"; do
     fi
     echo "===== 溯源: $f ====="
     f_norm="$(norm_path "$f")"
-    local_meta="${f}.meta.json"
     local_args=()
-    [ -f "$local_meta" ] && local_args+=(--meta "$(norm_path "$local_meta")")
+    local_meta="$(find_meta "$f")" && \
+        local_args+=(--meta "$(norm_path "$local_meta")")
 
     # shellcheck disable=SC2086
     "${AAWM_BIN[@]}" trace "$f_norm" "${local_args[@]}" "${COMMON_ARGS[@]}"

@@ -5,10 +5,14 @@
 
 1. 字符集上下文兼容率：对每对词，从语料中收集左邻/右邻字符集，
    计算双向重叠率的最小值。大语料下覆盖率显著提升。
-2. 语素共享 bonus：同字（共享汉字）的词对更可能安全互换
-   （标志/标记→共享"标"+"记"，近邻/邻居→共享"邻"）。
+2. 语素共享 bonus：共享非首位汉字的词对更可能安全互换
+   （保持/维持→共享"持"，近邻/邻居→共享"邻"）。仅共享首字
+   （水花/水珠、窗户/窗棂）是"同类异物"——同域不指同物，
+   不给 bonus（2026-08-27 修正，原规则误放行病句对）。
+   注意标志/标记这类首字共享的同物对拿不到 bonus，需上下文
+   兼容率兜底（语料充分时通常能救回）。
 
-综合分 = max(上下文兼容率, 0.3 if 语素共享 else 0)。
+综合分 = max(上下文兼容率, 0.3 if 非首位语素共享 else 0)。
 threshold 以下剔除。
 """
 from __future__ import annotations
@@ -74,14 +78,31 @@ def has_shared_morpheme(a: str, b: str) -> bool:
     return bool(set(a) & set(b))
 
 
+def shares_non_initial_morpheme(a: str, b: str) -> bool:
+    """共享语素中是否存在至少一方位于非首位的字。
+
+    2026-08-27 修正：原 has_shared_morpheme 对任何共享字给 bonus，
+    放行了大批「同类异物」病句对——水花/水珠、窗户/窗棂、信/信笺
+    共享首字（类别语素），只保证同域、不保证同物，替换后指称漂移。
+
+    非首位共享（保持/维持 的 "持"、近邻/邻居 的 "邻"）指向同一
+    对象的词根，才是安全互换的信号。首位共享且仅首位共享 → 不给
+    bonus，交给上下文兼容率裁决（标志/标记 这类首字共享同物对
+    亦走此路径，语料充分时可由兼容率救回）。
+    """
+    shared = set(a) & set(b)
+    return any(c != a[0] or c != b[0] for c in shared)
+
+
 def group_score(
     group: List[str],
     left: Dict[str, Set[str]],
     right: Dict[str, Set[str]],
 ) -> float:
-    """综合兼容分 = max(上下文兼容率, 0.3 if 语素共享 else 0)。
+    """综合兼容分 = max(上下文兼容率, 0.3 if 非首位语素共享 else 0)。
 
-    取组内最差词对的分数。
+    取组内最差词对的分数。语素 bonus 仅限非首位共享
+    （见 shares_non_initial_morpheme）。
     """
     if len(group) < 2:
         return 1.0
@@ -89,7 +110,9 @@ def group_score(
     for i in range(len(group)):
         for j in range(i + 1, len(group)):
             ctx_ov = pair_compat(left, right, group[i], group[j])
-            morph = 0.3 if has_shared_morpheme(group[i], group[j]) else 0.0
+            morph = (
+                0.3 if shares_non_initial_morpheme(group[i], group[j]) else 0.0
+            )
             score = max(ctx_ov, morph)
             if score < worst:
                 worst = score

@@ -130,7 +130,7 @@ def build_hybrid_zh_codec(
 ) -> "GreenlistCodec":
     """混合词典 codec：零感打底 + 补充词典补带 + 可选语料兼容性过滤。
 
-    零感词典（149 组安全词）先入取 word_owner 优先权；补充词典组
+    零感词典（136 组安全词）先入取 word_owner 优先权；补充词典组
     仅当不与零感词共享任何词时加入（先到先得不吞组）。
 
     实验验证（exp_hybrid_codec）：混合后口语 k 从 3.9→8.2（+110%），

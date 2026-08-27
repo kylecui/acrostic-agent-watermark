@@ -182,7 +182,7 @@ class Watermarker:
         """Args:
             codec_mode: 中文 codec 模式。
                 "default"  — 全词林 GreenlistCodec（旧行为，向后兼容）
-                "zero_cost"— 零感词典（149 组高自然替换，推荐）
+                "zero_cost"— 零感词典（136 组高自然替换，推荐）
                 "hybrid"   — 零感打底 + supplementary_dict 补带
             supplementary_dict: hybrid 模式的补充词典 {组名: [词列表]}
             calibrate_corpus: 无水印参考语料，构建 codec 时标定 p0
