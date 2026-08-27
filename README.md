@@ -1,6 +1,10 @@
 # Acrostic Agent Watermark (AAWM)
 
-**v0.6 通用 Agent 插件** —— 把水印能力封装为 SDK 中间件，任意 Agent 接入 3 行代码即可自动嵌入用户 ID 水印，实现事后溯源。
+**v0.9 通用 Agent 插件** —— 把水印能力封装为 SDK 中间件，任意 Agent 接入 3 行代码即可自动嵌入用户 ID 水印，实现事后溯源。
+
+> **📖 完整用户手册（product-ready）：[docs/user_guide.md](docs/user_guide.md)**
+> 按 6 种使用方式（CLI / 技能包 / Python SDK / 框架适配器 / HTTP 服务 / 代理网关）提供
+> **安装 → 配置 → 使用 → 验证**四步全流程，所有命令均经真实环境冒烟，可直接照做。
 
 > **v0.6 快速接入**（3 行代码）：
 > ```python
@@ -247,6 +251,7 @@ acrostic-agent-watermark/
 ├── README.md                  # 本文件
 ├── pyproject.toml             # 包配置（v0.7.0，含 CLI entry point）
 ├── docs/
+│   ├── user_guide.md        # 📖 完整用户手册（安装/配置/使用/验证，按使用方式分章）
 │   ├── research_notes.md      # 起步研究：领域扫描、相关工作、差异化定位
 │   ├── design.md              # 设计文档：架构、算法、威胁模型、v0.2-v0.5
 │   ├── plugin_guide.md        # v0.6 插件集成指南（3 场景 + FAQ）

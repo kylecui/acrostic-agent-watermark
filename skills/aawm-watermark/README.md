@@ -2,10 +2,7 @@
 
 给 AI agent 产出的**落盘文本交付物**自动/按需嵌入可溯源水印（AAWM 藏头式同义词水印），支持事后溯源定位泄露者。
 
-- 对读者无感（零感词典模式），语义不变
-- 持有密钥一方可溯源到具体 UID / 用户别名
-- **Fail-open**：嵌入失败保留原文，绝不阻塞 agent 交付流程
-
+> 📖 完整用户手册见仓库 [docs/user_guide.md](../../docs/user_guide.md)（§4 即本技能包的安装/配置/使用/验证全流程）。
 > 本技能包管"交付物文件"。对话/终端里的文字回复流由 `aawm proxy` 代理网关在传输层拦截（见 [docs/cli_agent_proxy_guide.md](../../docs/cli_agent_proxy_guide.md)），两者互补。
 
 ## 目录结构
