@@ -15,10 +15,11 @@ stable_id 对词典词 = 同义组 ID（替换前后不变），对词典外词 
 每个可锚定词位独立投一个 payload bit 位（桶）：
     bucket = PRF(key, salt, fp) mod L
 同一桶的多票构成天然重复码；攻击造成的错票分散在随机桶中，
-由桶内多数表决吸收。L = payload 位数（16 ID + 8 CRC），无独立 ECC。
+由桶内多数表决吸收。L = payload 位数（16 ID + CRC），无独立 ECC。
 
-解码置信度：CRC-8 兜底 + 弱桶 chase（翻转表决边际最小的少数桶，
-枚举组合重试 CRC），chase 使用会体现在结果里供上层权衡。
+解码置信度：CRC 兜底（v0.13 起默认 CRC-16，旧载荷 8 位）+ 弱桶 chase
+（翻转表决边际最小的少数桶，枚举组合重试 CRC），chase 使用会体现在
+结果里供上层权衡。
 """
 from __future__ import annotations
 
@@ -223,7 +224,8 @@ class CAConfig:
         user_id_bits: 用户 ID 位宽（默认 16）
         synonyms: 自定义同义词典（默认用内置稳定词典）
         min_anchorable: 最少可锚定位数（不足则拒绝嵌入）
-        chase_max_buckets: CRC 失败时最多翻转的弱桶数（2^m 次 CRC 试验）
+        chase_max_buckets: CRC 失败时最多翻转的弱桶数（2^m 次 CRC 试验）；
+            CRC-16（v0.13 默认）下自动 +1 补偿票数稀释
         sentence_aware: v0.4 句子边界感知指纹开关（默认 True）。
             True 时句首词左邻用 _BOS、句末词右邻用 _EOS，使重写单句只损失
             该句的票不污染邻句锚点；False 回退 v0.3 跨句真实邻居行为。
@@ -231,6 +233,11 @@ class CAConfig:
         language: v0.4 语言选择（"en" 英文 / "zh" 中文）。
             决定分词方式、符号提取（首字母 / 声母）、字母表（26 / 23）。
             "zh" 用 ZhAdapter + 中文稳定词典，零强依赖。
+        crc_bits: v0.13（P2-10）CRC 位宽，默认 16（CRC-16/CCITT-FALSE）。
+            旧默认 8（CRC-8）在 decoder chase 枚举下累计误报 ~3%
+            （随机文本实测 5-7%），16 位把误报压到 <0.1%。
+            **v0.13 前嵌入的文本需显式传 CAConfig(crc_bits=8) 解码**
+            （载荷位宽不同，混用会 CRC 失败而非误报——失败安全）。
     """
     user_id_bits: int = 16
     synonyms: Optional[Dict[str, List[str]]] = None
@@ -238,6 +245,7 @@ class CAConfig:
     chase_max_buckets: int = 3
     sentence_aware: bool = True
     language: str = "en"
+    crc_bits: int = 16
 
 
 @dataclass
@@ -273,7 +281,7 @@ class CADecodeResult:
     Attributes:
         success: 是否成功还原用户 ID
         user_id: 还原的用户 ID（失败为 None）
-        crc_ok: CRC-8 是否通过
+        crc_ok: CRC 是否通过（v0.13 起默认 CRC-16）
         n_votes: 总票数
         min_bucket_votes: 最少票桶的票数
         weak_buckets: 表决边际 ≤ weak_margin 的桶数
@@ -330,7 +338,8 @@ class CAEmbedder:
         if session_salt is None:
             session_salt = generate_session_salt()
 
-        payload = build_payload(user_id, self.config.user_id_bits)
+        payload = build_payload(
+            user_id, self.config.user_id_bits, crc_bits=self.config.crc_bits)
         n_buckets = len(payload)
 
         slots = _scan_slots(
@@ -436,7 +445,8 @@ class CADecoder:
         session_salt: bytes,
     ) -> CADecodeResult:
         synonyms = self.synonyms
-        n_buckets = self.config.user_id_bits + 8
+        crc_bits = self.config.crc_bits
+        n_buckets = self.config.user_id_bits + crc_bits
 
         slots = _scan_slots(
             suspect_text, synonyms, self.master_key, session_salt, n_buckets,
@@ -465,7 +475,8 @@ class CADecoder:
 
         # 第一轮：多数表决 + CRC
         guess = [1 if ones[j] * 2 > total[j] else 0 for j in range(n_buckets)]
-        uid, crc_ok = parse_payload(guess, self.config.user_id_bits)
+        uid, crc_ok = parse_payload(
+            guess, self.config.user_id_bits, crc_bits=crc_bits)
         if crc_ok:
             return CADecodeResult(
                 success=True, user_id=uid, crc_ok=True,
@@ -473,23 +484,47 @@ class CADecoder:
                 weak_buckets=len(weak), chase_used=False,
             )
 
-        # 第二轮：弱桶 chase —— 翻转表决边际最小的 m 桶，枚举组合重试 CRC
-        m = min(self.config.chase_max_buckets, len(weak))
-        order = sorted(range(n_buckets), key=lambda j: margins[j])[:m]
-        if order:
-            from itertools import combinations
-            for r in range(1, len(order) + 1):
-                for combo in combinations(order, r):
-                    trial = list(guess)
-                    for j in combo:
-                        trial[j] ^= 1
-                    uid2, ok2 = parse_payload(trial, self.config.user_id_bits)
-                    if ok2:
-                        return CADecodeResult(
-                            success=True, user_id=uid2, crc_ok=True,
-                            n_votes=n_votes, min_bucket_votes=min_bucket,
-                            weak_buckets=len(weak), chase_used=True,
-                        )
+        # 第二轮：弱桶 chase —— 翻转弱桶重试 CRC。
+        # CRC-16（32 桶）票数比 CRC-8（24 桶）稀释 1/3，空桶（margin=0）
+        # 更常见且会挤占按 margin 排序的配额——真正出错的 margin=1 桶
+        # 可能落在 order[:m] 之外而永远翻不到。因此 CRC-16 下：
+        #   1) 候选池放宽为全部弱桶（按 margin、票数升序，证据最弱的先试）；
+        #   2) 配额 +1（组合大小上限 4）；
+        #   3) 全局试验数上限 24（24/65536 ≈ 0.04% 误报上界，实测密集
+        #      词典随机文本 2000 样本 FP 0.05%，满足 <0.1% 目标）。
+        # CRC-8 保持 v0.12 旧行为（仅按 margin 截断配额），保证旧语义不变。
+        from itertools import combinations
+
+        if crc_bits >= 16:
+            quota = self.config.chase_max_buckets + 1
+            pool = sorted(weak, key=lambda j: (margins[j], total[j]))
+            max_trials = 24
+        else:
+            quota = self.config.chase_max_buckets
+            pool = sorted(range(n_buckets), key=lambda j: margins[j])[:quota]
+            max_trials = None
+
+        trials = 0
+        exhausted = False
+        for r in range(1, min(quota, len(pool)) + 1):
+            if exhausted:
+                break
+            for combo in combinations(pool, r):
+                if max_trials is not None and trials >= max_trials:
+                    exhausted = True
+                    break
+                trials += 1
+                trial = list(guess)
+                for j in combo:
+                    trial[j] ^= 1
+                uid2, ok2 = parse_payload(
+                    trial, self.config.user_id_bits, crc_bits=crc_bits)
+                if ok2:
+                    return CADecodeResult(
+                        success=True, user_id=uid2, crc_ok=True,
+                        n_votes=n_votes, min_bucket_votes=min_bucket,
+                        weak_buckets=len(weak), chase_used=True,
+                    )
 
         return CADecodeResult(
             success=False, user_id=None, crc_ok=False,

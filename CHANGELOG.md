@@ -1,5 +1,69 @@
 # Changelog
 
+## 0.13.0 (2026-08-28)
+
+主线：P1/P2 产品化收尾——可运维（指标/审计/密钥轮换/meta 存储）、更可靠（CRC-16 / UID 冗余 / 词典指纹）。
+
+> **升级注意（CRC-16 迁移）**：v0.13 起 `CAConfig.crc_bits` 默认 16（CRC-16/CCITT-FALSE），
+> payload 从 24 bit 变 32 bit（16 UID + 16 CRC）。**v0.13 之前嵌入的文本**需显式传
+> `CAConfig(crc_bits=8)` 解码；v0.13 嵌入的文本用旧配置解不出（CRC 位宽不匹配，安全失败）。
+
+### P1-4 指标（`aawm.server.metrics` + `GET /metrics`）
+
+- `Metrics` 计数器/观测值（`inc / observe / time_it`），文本格式渲染（Prometheus 兼容）
+- `aawm serve` 新增 `GET /metrics` 端点：trace 检出/未检计数、abstain 计数、耗时分布
+
+### P1-5 审计（`aawm.audit`）
+
+- `AuditLogger`（append-only JSONL）+ 全局 `set_audit_logger / get_audit_logger / audit`
+- `text_fingerprint(text)`：SHA-256 前 16 hex，事件统一携带
+- CLI `embed/trace/find-meta/serve` 新增 `--audit-log FILE`；事件 schema 统一为
+  `op: trace|embed|find_meta` + `source: cli|server`（CLI 原误用 `event` 键，已修正）
+
+### P1-6 密钥轮换（`KeyStore` 多版本 + `aawm rotate-key`）
+
+- `KeyStore` 升级 v2 格式：`version/active/keys` 多版本并存，`rotate()` 追加新版本并切换
+  active；`drop_version()` 应急删除（禁删 active）；兼容加载 legacy v1 单钥格式
+- `embed` 写入 `key_version`；`trace` 按 meta 中的 `key_version` 取对应密钥——
+  轮换后旧水印仍可溯源（双钥并行期）
+- CLI `aawm rotate-key --key key.json [--drop N]`
+
+### P1-7 meta 存储（`aawm.meta_store`，JSONL / SQLite 双后端）
+
+- `FileMetaStore`（JSONL）/ `SqliteMetaStore`（SQLite 索引表）/ `open_meta_store(path)`
+  按扩展名分发；接口：`put / get / find_by_text_hash / find_by_para_hash`
+- CLI `embed --meta-store FILE` 嵌入自动存档；`find-meta --meta-store FILE`
+  段落哈希反查（嫌疑文本逐段哈希查索引，**无需逐份 meta 文件**）
+
+### P2-8 UID 冗余（`uid_redundancy`）
+
+- `embed(uid_redundancy=r)`：UID 拆 r 份冗余嵌入（zero_cost/hybrid 模式，
+  default 模式无自适应容量，传 r>1 显式抛 `ValueError`）
+- `EmbedResult.uid_layout` 记录冗余布局；`trace(uid_layout=...)` 多数表决还原——
+  段落裁剪 50% 仍可归因不翻转；容量代价：k_uid = k // r
+
+### P2-9 词典指纹（`dict_version`）
+
+- `GreenlistCodec.dict_version`：词典内容 SHA-256 指纹（16 hex，盐无关）
+- `embed` 写入 meta；`trace` 重建 codec 后比对，结果记录在
+  `TraceResult.dict_version_match`——溯源侧词典与嵌入侧不一致时显式暴露
+
+### P2-10 CRC-16（`CAConfig.crc_bits=16` 默认）
+
+- `crc16`（CRC-16/CCITT-FALSE，多项式 0x1021，初值 0xFFFF）+ `compute_crc` 按位宽分发
+- CRC-16 使 32 桶投票信道单 bit 翻转检出从 ~1/256 提升到 ~1/65536
+- chase 算法重写（CRC-16 路径）：候选池放宽为全部弱桶（按 `(margin, total)` 升序）+
+  配额 4 + 全局试验上限 24（无上限枚举在密集词典随机文本上实测 FP 1.1% → 0.05%）
+- CRC-8 路径保持 v0.12 旧行为不变（order 截断 + 配额 3）
+
+### 测试
+
+- 新增 `tests/test_v013_features.py`（39 项）：CRC-16 编解码/往返/位宽混用安全、
+  dict_version 跨盐稳定、UID 冗余往返+裁剪归因、keystore 轮换（legacy 兼容/rotate/drop）、
+  facade key_version 轮换溯源、meta 双后端、audit、metrics、/metrics 端点、
+  CLI rotate-key/--meta-store/--audit-log
+- 全量回归 397 passed（基线 357 → 397）
+
 ## 0.12.0 (2026-08-28)
 
 主线：开箱体验（P0 产品化）——标定从"专家步骤"变成"一条命令"，短文本从"可能悄悄漏检"变成"明确分级仍嵌入"。

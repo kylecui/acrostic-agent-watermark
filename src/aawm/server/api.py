@@ -20,9 +20,13 @@ from typing import Any, List, Optional
 from pydantic import BaseModel
 
 from ..plugins import Watermarker
+from .metrics import Metrics
 
 # 模块级 watermarker 单例
 _watermarker: Optional[Watermarker] = None
+
+# v0.13 进程级指标（/metrics 端点数据源；reset_watermarker 时一并复位）
+_metrics = Metrics()
 
 
 def set_watermarker(wm: Watermarker) -> None:
@@ -33,8 +37,14 @@ def set_watermarker(wm: Watermarker) -> None:
 
 def reset_watermarker() -> None:
     """重置模块级 Watermarker（测试用）。"""
-    global _watermarker
+    global _watermarker, _metrics
     _watermarker = None
+    _metrics = Metrics()
+
+
+def get_metrics() -> Metrics:
+    """进程级指标注册表（测试/自定义暴露用）。"""
+    return _metrics
 
 
 # ----------------------------------------------------------------------
@@ -149,8 +159,11 @@ class FindMetaResponse(BaseModel):
 def create_app():
     """创建 FastAPI app。"""
     from fastapi import FastAPI, HTTPException
+    from fastapi.responses import PlainTextResponse
 
-    app = FastAPI(title="AAWM Watermark Service", version="0.12.0")
+    from ..audit import audit, text_fingerprint
+
+    app = FastAPI(title="AAWM Watermark Service", version="0.13.0")
 
     @app.get("/v1/health")
     async def health() -> dict:
@@ -158,6 +171,15 @@ def create_app():
             "status": "ok",
             "watermarker_initialized": _watermarker is not None,
         }
+
+    @app.get("/metrics", response_class=PlainTextResponse)
+    async def metrics() -> PlainTextResponse:
+        """Prometheus 文本格式指标（P1-4 可观测性）。
+
+        嵌入量/weak_embed 率/abstain 率/检索延迟——产品健康度核心指标。
+        """
+        return PlainTextResponse(
+            _metrics.render(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
     @app.post("/v1/trace", response_model=TraceResponse)
     async def trace(req: TraceRequest) -> TraceResponse:
@@ -175,15 +197,34 @@ def create_app():
                 version=req.seal.get("version", 1),
             )
 
-        result = _watermarker.trace(
-            req.text,
-            session_salt=session_salt,
-            seal=seal,
-            language=req.language,
-            bands=req.bands,
-            n_bits=req.n_bits,
-            archived_uid=req.archived_uid,
-        )
+        with _metrics.time_it("aawm_request_latency_seconds", op="trace"):
+            result = _watermarker.trace(
+                req.text,
+                session_salt=session_salt,
+                seal=seal,
+                language=req.language,
+                bands=req.bands,
+                n_bits=req.n_bits,
+                archived_uid=req.archived_uid,
+            )
+        _metrics.inc("aawm_trace_requests_total")
+        _metrics.inc("aawm_text_chars_total", len(req.text), op="trace")
+        if result.watermarked:
+            _metrics.inc("aawm_trace_watermarked_total")
+        if result.attribution_abstain:
+            _metrics.inc("aawm_trace_abstain_total")
+        audit({
+            "op": "trace", "source": "server",
+            "text_sha256": text_fingerprint(req.text),
+            "text_chars": len(req.text),
+            "watermarked": result.watermarked,
+            "uid": result.uid,
+            "user": result.user,
+            "attribution_abstain": result.attribution_abstain,
+            "attribution_confidence": round(result.attribution_confidence, 4),
+            "confidence": round(result.confidence, 4),
+            "existence_score": round(result.existence_score, 2),
+        })
 
         return TraceResponse(
             watermarked=result.watermarked,
@@ -211,14 +252,30 @@ def create_app():
             raise HTTPException(status_code=503, detail="watermarker not initialized")
 
         session_salt = bytes.fromhex(req.session_salt) if req.session_salt else None
-        result = _watermarker.embed(
-            req.text,
-            user_id=req.user_id,
-            session_salt=session_salt,
-            sign=req.sign,
-            language=req.language,
-            n_bits=req.n_bits,
-        )
+        with _metrics.time_it("aawm_request_latency_seconds", op="embed"):
+            result = _watermarker.embed(
+                req.text,
+                user_id=req.user_id,
+                session_salt=session_salt,
+                sign=req.sign,
+                language=req.language,
+                n_bits=req.n_bits,
+            )
+        _metrics.inc("aawm_embed_requests_total", reliability=result.reliability)
+        _metrics.inc("aawm_text_chars_total", len(req.text), op="embed")
+        if result.weak_embed:
+            _metrics.inc("aawm_embed_weak_total")
+        audit({
+            "op": "embed", "source": "server",
+            "text_sha256": text_fingerprint(req.text),
+            "text_chars": len(req.text),
+            "user_id": result.user_id,
+            "user_alias": result.user_alias,
+            "reliability": result.reliability,
+            "weak_embed": result.weak_embed,
+            "capacity": result.capacity,
+            "n_bits": result.n_bits,
+        })
 
         return EmbedResponse(
             watermarked_text=result.watermarked_text,
@@ -249,7 +306,28 @@ def create_app():
         if _watermarker is None:
             raise HTTPException(status_code=503, detail="watermarker not initialized")
         import hashlib
+        import time
+
+        from ..audit import audit, text_fingerprint
         from ..binding import split_paragraphs
+
+        t0 = time.perf_counter()
+
+        def _finish_findmeta(kind: str, label, uid, user) -> None:
+            _metrics.observe(
+                "aawm_request_latency_seconds",
+                time.perf_counter() - t0, op="find_meta")
+            _metrics.inc("aawm_findmeta_requests_total", result=kind)
+            audit({
+                "op": "find_meta", "source": "server",
+                "text_sha256": text_fingerprint(req.text),
+                "text_chars": len(req.text),
+                "result": kind,
+                "matched_label": label,
+                "uid": uid,
+                "user": user,
+                "n_candidates": len(req.candidates),
+            })
 
         paras = split_paragraphs(req.text)
         text_hashes = {hashlib.sha256(p.encode("utf-8")).digest() for p in paras}
@@ -305,6 +383,8 @@ def create_app():
 
         if kind == "none":
             best_overlap, best_i, best_cand = ranked[0] if ranked else (0, None, None)
+            _finish_findmeta("none", best_cand.label if best_overlap > 0 else None,
+                             None, None)
             return FindMetaResponse(
                 watermarked=False,
                 matched_index=best_i if best_overlap > 0 else None,
@@ -314,6 +394,8 @@ def create_app():
             )
         if kind == "abstain":
             cand = _find_cand(label) if label is not None else None
+            _finish_findmeta("abstain",
+                             cand.label if cand else None, None, None)
             return FindMetaResponse(
                 watermarked=bool(t and t.watermarked),
                 matched_index=label,
@@ -332,6 +414,7 @@ def create_app():
             )
 
         cand = _find_cand(label)
+        _finish_findmeta("match", cand.label if cand else None, t.uid, t.user)
         return FindMetaResponse(
             watermarked=True,
             matched_index=label,

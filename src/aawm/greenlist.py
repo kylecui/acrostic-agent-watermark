@@ -55,6 +55,24 @@ def _split_keep_seps(text: str) -> List[str]:
 Tokenizer = Callable[[str], List[Tuple[str, Optional[str]]]]
 
 
+def _dict_fingerprint(dictionary: Dict[str, List[str]]) -> str:
+    """源词典内容的确定性指纹（16 hex，v0.13 P2-9）。
+
+    盐无关（不含 green/band 派生）：同词典跨盐/跨进程稳定，
+    词典内容（组定义/成员变更）变则变。meta 存档嵌入时的
+    dict_version，trace 重建 codec 后比对——词典升级或
+    supplementary_dict 变更会使带映射失效（静默漏检），显式
+    暴露 mismatch 供调用方告警。
+    """
+    h = hashlib.sha256()
+    for head in sorted(dictionary):
+        h.update(head.encode("utf-8"))
+        h.update(b"\x00")
+        h.update("\x01".join(sorted(dictionary[head])).encode("utf-8"))
+        h.update(b"\x02")
+    return h.hexdigest()[:16]
+
+
 def en_tokenizer(text: str) -> List[Tuple[str, Optional[str]]]:
     """英文默认分词：正则切词保留分隔符，词片段给出小写 norm。"""
     return [
@@ -332,6 +350,9 @@ class GreenlistCodec:
         # --- 必修课 3：逐带 p0（默认 0.5，需 calibrate_p0 用真实语料标定）---
         self._p0: Dict[int, float] = {}
 
+        # v0.13（P2-9）：源词典指纹（盐无关）
+        self._dict_version = _dict_fingerprint(dictionary)
+
     # ------------------------------------------------------------------
     # 密钥化谓词
     # ------------------------------------------------------------------
@@ -359,6 +380,11 @@ class GreenlistCodec:
             "n_bands": self.n_bands,
             "min_group_size": min((len(m) for m in self._groups.values()), default=0),
         }
+
+    @property
+    def dict_version(self) -> str:
+        """源词典指纹（16 hex，v0.13 P2-9）。详见 _dict_fingerprint。"""
+        return self._dict_version
 
     # ------------------------------------------------------------------
     # p0 标定（必修课 3）
@@ -781,6 +807,142 @@ class GreenlistCodec:
         if best_full is None:
             return None, sc, gap
         return self.unmap_uid(best_full, bands), sc, gap
+
+    # ------------------------------------------------------------------
+    # UID 冗余（v0.13 P2-8）：同一位多带投票
+    # ------------------------------------------------------------------
+    # 动机：单带编码下 UID 的每个 bit 只有 1 票——段落删除/裁剪
+    # (crop50) 使约半数带整带消失时，幸存带里平均一半的 bit 失去
+    # 唯一证据，UID 归因从 k/5 崩到 1-3/5（实测）。
+    # 方案：把活动带按 stride 交错分成 r 份（copy c = bands[c::r]），
+    # 每份编码同一个 n_bits = floor(k/r) 位 UID。检测端按 layout
+    # 聚合每位的多带 z 投票（缺失带贡献 0，不翻转结果）。
+    # 代价：UID 位空间缩小 r 倍（16→8 位 @r=2）。
+    # 为什么交错而非连续分块：带号来自 HMAC(组头)，与文本位置无关，
+    # 但攻击（删段落）在文本空间局部化——交错保证每份 copy 的带
+    # 均匀散布全文，删除任何局部段落对所有 copy 等强度削弱（每 bit
+    # 仍保有多数票），而不是整块 copy 被歼灭。
+
+    @staticmethod
+    def build_redundant_layout(bands: Sequence[int], r: int) -> List[List[int]]:
+        """活动带 → r 份交错 copy，返回 layout[bit] = 编码该位的带列表。
+
+        copy c 取 bands[c::r] 的前 n_bits 个（n_bits = floor(k/r)，
+        保证每份都有 n_bits 个带）；bit j 由所有 copy 的第 j 个带共同
+        编码。多余带（k - r·n_bits 个）不编码 UID，但仍参与存在性
+        得分 Σ|z|。
+        """
+        if r < 1:
+            raise ValueError(f"redundancy r must be >= 1, got {r}")
+        bl = list(bands)
+        n_bits = len(bl) // r
+        if n_bits < 1:
+            raise ValueError(
+                f"容量 {len(bl)} bit 不足以支撑 {r} 份冗余（需 >= {r}）")
+        layout: List[List[int]] = [[] for _ in range(n_bits)]
+        for c in range(r):
+            chunk = bl[c::r][:n_bits]
+            for j, b in enumerate(chunk):
+                layout[j].append(b)
+        return layout
+
+    def embed_redundant(
+        self,
+        text: str,
+        uid: int,
+        *,
+        r: int = 2,
+        n_bits: Optional[int] = None,
+        bias: float = 1.0,
+        rng: Optional[random.Random] = None,
+    ) -> Tuple[str, List[List[int]]]:
+        """UID 冗余嵌入：同一位由 r 个交错带共同编码。
+
+        n_bits：UID 位宽（默认 floor(k/r) 满冗余；显式给小值则只用
+        前 n_bits*r 个带，剩余带不编码 UID 但仍贡献存在性得分）。
+        返回 (标记文本, layout)。layout 必须存档（meta 的 uid_layout），
+        detect_redundant / soft_match_redundant 需要它。
+        """
+        bands = self.active_bands(text, min_n=1)
+        n_avail = len(bands) // r
+        if n_bits is None:
+            n_bits = n_avail
+        if not (1 <= n_bits <= n_avail):
+            raise ValueError(
+                f"n_bits={n_bits} 超出冗余容量 {n_avail} bit"
+                f"（{len(bands)} 带 ÷ {r} 份）")
+        if uid < 0 or uid >= (1 << n_bits):
+            raise ValueError(
+                f"uid 0x{uid:X} 超出冗余容量 {n_bits} bit"
+                f"（{len(bands)} 带 ÷ {r} 份）")
+        layout = self.build_redundant_layout(bands[: n_bits * r], r)
+        full = 0
+        for bit, bit_bands in enumerate(layout):
+            if (uid >> bit) & 1:
+                for b in bit_bands:
+                    full |= 1 << b
+        return self.embed(text, full, bias=bias, rng=rng), layout
+
+    def detect_redundant(
+        self,
+        text: str,
+        layout: Sequence[Sequence[int]],
+        *,
+        min_n: int = 1,
+    ) -> Tuple[int, BandReport]:
+        """冗余检测：按 layout 聚合每 bit 的多带 z 投票（硬判决）。
+
+        缺失带（攻击删除）贡献 0，不翻转该 bit——只要幸存票净和
+        保持正确符号，bit 就解对。返回 (uid, report)。
+        """
+        rep = self.detect(text, min_n=min_n)
+        z_by_band = {st.band: st.z for st in rep.bands if st.has_signal}
+        uid = 0
+        for bit, bit_bands in enumerate(layout):
+            s = sum(z_by_band.get(b, 0.0) for b in bit_bands)
+            if s > 0:
+                uid |= 1 << bit
+        return uid, rep
+
+    def soft_match_redundant(
+        self,
+        text: str,
+        candidates: Sequence[int],
+        layout: Sequence[Sequence[int]],
+        *,
+        min_n: int = 1,
+        margin: float = 0.0,
+        margin_ratio: Optional[float] = None,
+    ) -> Tuple[Optional[int], float, float]:
+        """冗余 soft 匹配：candidates 为 n_bits 位 UID（n_bits=len(layout)）。
+
+        得分函数与 soft_match 相同（z 加符号投票），但每位聚合
+        layout 上多带 z 之和。缺失带贡献 0——候选间的区分度由
+        幸存带维持。返回 (best_uid, score, gap)。
+        """
+        cands = list(dict.fromkeys(candidates))
+        if not cands:
+            return None, 0.0, 0.0
+        rep = self.detect(text, min_n=min_n)
+        if margin_ratio is not None and margin_ratio > 0:
+            margin = max(margin, margin_ratio * math.sqrt(rep.n_dict_words))
+        z_by_band = {st.band: st.z for st in rep.bands if st.has_signal}
+
+        def _score(c: int) -> float:
+            s = 0.0
+            for bit, bit_bands in enumerate(layout):
+                sign = 1.0 if ((c >> bit) & 1) else -1.0
+                for b in bit_bands:
+                    s += z_by_band.get(b, 0.0) * sign
+            return s
+
+        scored = sorted(((_score(c), c) for c in cands), key=lambda x: x[0], reverse=True)
+        best_score, best_uid = scored[0]
+        second_score = scored[1][0] if len(scored) > 1 else best_score - margin - 1.0
+        gap = best_score - second_score
+        if gap < margin:
+            return None, best_score, gap
+        return best_uid, best_score, gap
 
 
 @dataclass(frozen=True)

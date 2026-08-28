@@ -783,15 +783,33 @@ aawm calibrate --demo -o calibration.json    # 快速体验（包内置示例语
 - 每次嵌入产出 `<文件>.meta.json`，**与交付物一同归档**（git / 对象存储）。
 - 建议统一进 `metas/` 目录——find-meta 一条命令全量反查。
 - proxy 网关的 `--salt-archive salts.jsonl` 也是 meta 归档的一种（JSONL 格式，find-meta 直接支持）。
+- **v0.13 meta 存储后端**（推荐规模化场景）：`embed --meta-store metas.jsonl`
+  （或 `metas.db` SQLite）嵌入自动存档并建段哈希索引；溯源时
+  `find-meta suspect.txt --key key.json --meta-store metas.jsonl` 段落哈希
+  反查——不需要再逐份收集 meta 文件。Python 侧等价 API：
+  `aawm.meta_store.open_meta_store(path)`（`put / get / find_by_text_hash /
+  find_by_para_hash`）。
 
 ### 10.3 密钥管理
 
 - `key.json` 权限 600（自动设置），目录 700；**离线备份**（丢失 = 全部历史水印不可溯源）。
 - 不进代码库、不进日志、不进错误堆栈。
 - 密钥是**对称的**——谁有 key 谁就能嵌入，只在可信边界内流转。
-- 轮换：master_key 换了旧水印无法溯源；新旧并行期用两个 Watermarker 实例依次尝试，并给发布记录记 `key_version`。
+- **轮换（v0.13 起）**：`aawm rotate-key --key key.json` 追加新版本并切换
+  active，旧版本保留（双钥并行期）。embed 自动在 meta 记 `key_version`，
+  `trace --meta` 按版本取对应密钥——**旧水印无需任何额外操作仍可溯源**。
+  确认某版本泄漏后 `aawm rotate-key --key key.json --drop N` 应急删除
+  （该版本嵌入的水印将永久无法溯源；active 版本禁止删除）。
 
-### 10.4 上线前自查
+### 10.4 审计与指标（v0.13）
+
+- **审计**：`embed/trace/find-meta/serve` 均支持 `--audit-log audit.jsonl`
+  （append-only JSONL），事件含 `op / source / uid / text_sha256`——谁在
+  什么时候嵌入/溯源了什么文本，事后可查（`aawm.audit.AuditLogger.read_all`）。
+- **指标**：`aawm serve` 暴露 `GET /metrics`（Prometheus 格式），含 trace
+  检出/未检/abstain 计数与耗时分布。
+
+### 10.5 上线前自查
 
 - [ ] `aawm embed` 的统计行：词典命中 ≥ 30、容量 ≥ 16 bit？
 - [ ] 已标定（`aawm calibrate` + `--calibration` / `AAWM_CALIB`）？embed 输出 reliability=high（或知悉 medium/low 的降级风险）？
@@ -827,7 +845,12 @@ aawm calibrate --demo -o calibration.json    # 快速体验（包内置示例语
 3. **仅 UTF-8 文本**：图片/PDF/Office 等二进制不支持。
 4. **英文 UID 解码**：英文 codec 为统计解码，UID 有约 30% 误码率，建议用软判决路径。
 5. **未标定阈值偏严**：不配标定语料时存在性阈值保守，中等信号文本可能漏检（生产必配 `--calibration`）。
-6. **密钥轮换**：master_key 更换后旧水印无法再溯源（需并行期策略）。
+6. **密钥轮换**（v0.13 已解决）：`aawm rotate-key` 双钥并行 + meta 的 `key_version`
+   按版本取钥，旧水印照常溯源；仅当 `--drop` 应急删除某版本后，该版本水印不可溯源。
+7. **CRC-16 迁移**（v0.13）：`CAConfig.crc_bits` 默认 16（payload 24→32 bit）。
+   **v0.13 之前嵌入的文本**需显式 `CAConfig(crc_bits=8)` 解码；位宽不匹配时
+   CRC 校验安全失败（不会解出错误 UID）。CLI 的 zero_cost/hybrid 路径不涉及
+   此参数，不受影响。
 
 ---
 
