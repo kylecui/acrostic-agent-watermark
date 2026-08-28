@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sys
 from pathlib import Path
 from typing import Any
@@ -74,7 +75,7 @@ def _install_fake_autogen(monkeypatch):
 class TestAutoGenAdapter:
     def test_import_error_without_autogen(self):
         """未安装 autogen-agentchat 时 wrap 抛清晰 ImportError。"""
-        if "autogen_agentchat" in sys.modules:
+        if importlib.util.find_spec("autogen_agentchat") is not None:
             pytest.skip("autogen installed, skipping import-error test")
         from aawm.plugins.adapters.autogen_v1 import wrap_autogen_agent
         wm = Watermarker()
@@ -185,7 +186,7 @@ class FakeHookContext:
 class TestCrewAIAdapter:
     def test_import_error_without_crewai(self):
         """未安装 crewai 时 setup_hooks 抛清晰 ImportError。"""
-        if "crewai" in sys.modules:
+        if importlib.util.find_spec("crewai") is not None:
             pytest.skip("crewai installed, skipping import-error test")
         from aawm.plugins.adapters.crewai_v1 import setup_hooks
         wm = Watermarker()

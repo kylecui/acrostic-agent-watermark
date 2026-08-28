@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import sys
 from pathlib import Path
 from typing import Any, List
@@ -64,8 +65,8 @@ class TestLangChainAdapter:
 
     def test_import_without_langchain_raises(self):
         """未安装 langchain 时，AAWMMiddleware 应给出清晰错误。"""
-        # 确保测试环境没装 langchain
-        if "langchain" in sys.modules:
+        # 已安装（无论是否已 import）则无法测 import-error 路径
+        if importlib.util.find_spec("langchain") is not None:
             pytest.skip("langchain installed, skipping import-error test")
         from aawm.plugins.adapters.langchain_v1 import AAWMMiddleware
         wm = Watermarker()
