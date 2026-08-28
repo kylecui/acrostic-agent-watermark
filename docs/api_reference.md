@@ -156,6 +156,10 @@ class EmbedResult:
     bands: list[int] = []          # 活动带列表（trace 时必须回传）
     capacity: int = 0              # 活动带数（k-bit 容量）
     n_bits: int = 0                # 实际编码位数（含冗余时 < capacity）
+    # v0.10 弱嵌入警示（自检存在性余量 = existence_score/阈值）
+    margin_ratio: float = 0.0      # 自检余量（自适应模式）；>=1.5 视为信号充足
+    weak_embed: bool = False       # True=余量 <1.5（短文本/词典稀疏），
+                                   #   trace 可能漏检或归因 abstain，应加大文本再嵌
 ```
 
 ## TraceResult
@@ -435,7 +439,10 @@ trace 退出码：0=检出水印，2=未检出。
 {"watermarked": true, "uid": 4660, "user": "user-alice", "hamming_dist": 1,
  "confidence": 0.45, "tampered": false, "tampered_paragraphs": [],
  "existence_score": 18.1, "n_dict_words": 46,
- "codec_mode": "zero_cost", "capacity": 6, "n_bits": 6, "active_bands": 5}
+ "codec_mode": "zero_cost", "capacity": 6, "n_bits": 6, "active_bands": 5,
+ "attribution_confidence": 0.8, "attribution_abstain": false}
+// v0.10：attribution_abstain=true 时 uid/user/hamming_dist 为 null/-1
+// （归因置信不足，输出"不可判定"而非可能错误的 UID/用户）
 ```
 
 ### POST /v1/embed
@@ -448,7 +455,33 @@ trace 退出码：0=检出水印，2=未检出。
 // 响应
 {"watermarked_text": "...", "session_salt": "<hex>", "user_id": 4660,
  "user_alias": "user-alice", "has_seal": true, "existence_score": 18.1,
- "codec_mode": "zero_cost", "bands": [2,5,9], "capacity": 6, "n_bits": 6}
+ "codec_mode": "zero_cost", "bands": [2,5,9], "capacity": 6, "n_bits": 6,
+ "margin_ratio": 2.1, "weak_embed": false}
+// v0.10：weak_embed=true（自检余量 <1.5）为弱嵌入警告——文本信号不足，
+// trace 可能漏检；应加大文本或换词典密度更高的语料再嵌
+```
+
+### POST /v1/find-meta
+
+meta 散失时，在候选存档中反查来源（与 CLI `aawm find-meta` 同规则）：
+
+```json
+// 请求
+{"text": "...", "candidates": [
+   {"session_salt": "<hex>", "bands": [2,5,9], "n_bits": 6,
+    "seal": {...}, "label": "doc_00.meta.json", "archived_uid": 17}
+ ], "language": "zh", "max_trace": 10}
+// archived_uid 可选：嵌入时的存档 UID（盐外证据，解码交叉校验用）
+
+// 响应
+{"watermarked": true, "matched_index": 0, "matched_label": "doc_00.meta.json",
+ "uid": 17, "user": "u1", "hamming_dist": 0, "confidence": 0.83,
+ "existence_score": 33.4, "tampered": true, "tampered_paragraphs": [0],
+ "para_overlap": 5, "para_total": 8,
+ "attribution_confidence": 0.8, "attribution_abstain": false}
+// v0.10 裁决：段哈希内容证据优先 + 解码 UID 与 archived_uid 交叉校验；
+// 解码失真/多候选冲突时 attribution_abstain=true、uid/user=null（不可判定），
+// 绝不输出可能错误的 UID/用户（攻击下"检出"盐无关，多条盐都会检出）
 ```
 
 ### GET /v1/health
