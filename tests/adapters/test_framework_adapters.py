@@ -85,7 +85,9 @@ class TestLangChainAdapter:
             del sys.modules["aawm.plugins.adapters.langchain_v1"]
         from aawm.plugins.adapters.langchain_v1 import AAWMMiddleware
 
-        wm = Watermarker()
+        # LONG_TEXT 是通用英文文本，必须走 default 词林（零感词典命中稀疏时
+        # 随机盐下可能"无词可改"返回原文 → 断言偶发失败）
+        wm = Watermarker(codec_mode="default")
         mw = AAWMMiddleware(wm)
 
         # 构造假 response（LangChain AIMessage 风格）
@@ -193,7 +195,11 @@ class TestLiteLLMAdapter:
         """非流式钩子应嵌入水印。"""
         from aawm.plugins.adapters import litellm_proxy
 
-        wm = Watermarker()
+        # LONG_TEXT 是通用英文文本，零感词典命中稀疏——必须显式 default
+        # 词林路径（旧默认行为，稳定改写），否则 embed 随机盐下可能无词
+        # 可替换而返回原文 → 断言偶发失败（VERIFICATION_REPORT 的
+        # "LiteLLM 适配器 hook" flaky）。
+        wm = Watermarker(codec_mode="default")
         litellm_proxy.setup_hooks(wm)
 
         # 构造假 OpenAI 格式响应

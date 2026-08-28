@@ -518,6 +518,7 @@ class Watermarker:
         match_margin_ratio: Optional[float] = 0.3,
         bands: Optional[List[int]] = None,
         n_bits: Optional[int] = None,
+        archived_uid: Optional[int] = None,
     ) -> TraceResult:
         """溯源：存在性检测 + UID 解码 + 注册库匹配 + 篡改判定。
 
@@ -548,6 +549,12 @@ class Watermarker:
             bands: 嵌入时保存的带集元数据（自适应路径）。传入时走
                 detect_adaptive/soft_match_adaptive（k-bit 空间）。
             n_bits: 嵌入时的编码位数（含冗余）。None 时用 len(bands)。
+            archived_uid: 盐外证据（v0.10+）：嵌入时存档的 UID（meta 的
+                user_id/uid 字段，嵌入时真值）。多盐扫描/档案扫描场景
+                下调用方持 meta 时应传入：解码 UID 与存档 UID 不一致即
+                视为失真 → abstain（uid=None，绝不输出可能错误的 UID）。
+                消除防御的路径依赖——此前只有 CLI/find-meta（持 meta
+                路径）做此校验，直接调本 API 的消费者无保护。
 
         Returns:
             TraceResult
@@ -672,6 +679,20 @@ class Watermarker:
             user = None
             hamming_dist = -1
 
+        # 盐外证据（v0.10+）：meta 存档 UID 与解码 UID 交叉校验。
+        # 攻击下存在性常存活但 UID 解码失真（"自信地错"），存档 UID 是
+        # 嵌入时的真值——不一致即视为失真，宁可 abstain 也不输出可能
+        # 错误的 UID。裸 API 消费者持 meta 时必须显式传 archived_uid，
+        # 否则与 CLI/find-meta 的防御存在路径依赖差（存档 UID 校验
+        # 只发生在"持有 meta"的路径上）。
+        if (watermarked and archived_uid is not None and uid is not None
+                and not self._uid_alias_match(uid, archived_uid, eff_bits)):
+            attribution_abstain = True
+            uid = None
+            user = None
+            hamming_dist = -1
+            attribution_confidence = 0.0
+
         # 信道 A 篡改判定
         tampered = None
         tampered_paras: List[int] = []
@@ -779,6 +800,31 @@ class Watermarker:
         if not hits:
             return None
         return self._registry.lookup(min(hits))
+
+    @staticmethod
+    def _uid_alias_match(uid: Optional[int], archived_uid: Optional[Any],
+                         n_bits: int) -> bool:
+        """解码 UID 与 meta 存档 UID 是否一致（盐外证据，含自适应 k-bit 掩码对齐）。
+
+        语义与 cli._uid_alias_match 保持一致：相等，或按 n_bits 掩码
+        ``uid == (archived_uid & mask)`` 视为一致（自适应 k-bit 空间下
+        UID 实际编码在低 n_bits 位，解码值是该位空间内的值）。
+
+        Args:
+            uid: 解码出的 UID（None=未归因，无法比对）
+            archived_uid: 嵌入时存档的 UID（meta 真值；可为 int 或数字串）
+            n_bits: 编码位数（非自适应路径传 0 → 仅精确相等算一致）
+        """
+        if uid is None or archived_uid is None:
+            return False
+        try:
+            auid = int(archived_uid)
+        except (TypeError, ValueError):
+            return False
+        if uid == auid:
+            return True
+        mask = (1 << n_bits) - 1 if n_bits else None
+        return bool(mask and uid == (auid & mask))
 
     # ------------------------------------------------------------------
     # 便捷方法

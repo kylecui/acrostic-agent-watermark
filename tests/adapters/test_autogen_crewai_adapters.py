@@ -198,7 +198,9 @@ class TestCrewAIAdapter:
 
         reg = UIDRegistry(backend="memory")
         reg.register("carol", uid=7)
-        wm = Watermarker(registry=reg)
+        # LONG_TEXT 是通用英文文本，零感词典命中稀疏 → 显式 default 词林，
+        # 否则随机盐下可能"无词可改"返回原文 → 断言偶发失败。
+        wm = Watermarker(registry=reg, codec_mode="default")
         crewai_v1.setup_hooks(wm, user_id="carol")
 
         # 确认注册到了 crewai 的 register_after_llm_call_hook

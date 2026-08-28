@@ -177,19 +177,8 @@ def create_app():
             language=req.language,
             bands=req.bands,
             n_bits=req.n_bits,
+            archived_uid=req.archived_uid,
         )
-
-        # 盐外证据（v0.10）：存档 UID 与解码 UID 交叉校验。攻击下存在性
-        # 常存活但 UID 解码失真（"自信地错"），存档 UID 是嵌入时真值——
-        # 不一致即 abstain（uid/user 置空），绝不输出可能错误的 UID。
-        if req.archived_uid is not None:
-            from dataclasses import replace
-            from ..cli import _uid_alias_match
-            if (result.watermarked and not result.attribution_abstain
-                    and not _uid_alias_match(result, req.archived_uid)):
-                result = replace(
-                    result, uid=None, user=None, hamming_dist=-1,
-                    attribution_abstain=True, attribution_confidence=0.0)
 
         return TraceResponse(
             watermarked=result.watermarked,
