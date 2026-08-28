@@ -289,6 +289,7 @@ trace = watermarker.trace(
     seal=stored_seal,           # 可选，篡改检测用
     bands=stored_bands,         # v0.7：零感模式必须回传（embed 返回）
     n_bits=stored_n_bits,       # v0.7：零感模式建议回传
+    archived_uid=stored_uid,    # v0.11：嵌入时存档的 UID（盐外证据，见下）
 )
 
 print(trace.watermarked)     # True/False —— 有没有水印
@@ -298,6 +299,14 @@ print(trace.confidence)      # 置信度 [0,1]
 print(trace.tampered)        # None=无seal无法判定 / True=被篡改 / False=未篡改
 print(trace.tampered_paragraphs)  # 被改段落索引
 ```
+
+**盐外证据（v0.11，防路径依赖）**：攻击下"检出"本质盐无关——错误盐/多条
+盐扫描也会检出一个存在性信号，但解码 UID 常失真；若只按解码结果归因，
+裸 API 消费者（不持 meta、不查库直接调 `trace()`）会把文本归给错误用户。
+嵌入时把 UID 存档（`result.user_id`），溯源时回传 `archived_uid`：
+trace 会做解码 UID 与存档 UID 的交叉校验，不一致即 `attribution_abstain=True`
+且 `uid/user=None`——**宁可 abstain 也不输出可能错误的归因**。
+CLI `find-meta` / server `/v1/trace` 持 meta 时自动完成该校验，无需手工传。
 
 #### 软判决匹配（v0.7；v0.10 起默认启用）
 

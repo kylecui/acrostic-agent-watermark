@@ -34,6 +34,13 @@ TEXT = (
     "We expect the platform to become the standard tool for teams that value speed and simplicity."
 )
 
+# 编辑鲁棒性测试用固定 key+盐，使嵌入输出完全确定（消除随机盐 flaky——
+# VERIFICATION_REPORT 曾多次观测 test_insert_10_words 偶发失败：随机盐下
+# 嵌入输出不同，攻击存活率在 7/10 阈值附近波动）。与同文件 wrong-key /
+# plain-text 测试的确定性化模式一致。
+EDIT_KEY = bytes(range(32))
+EDIT_SALT = bytes(range(16))
+
 INSERT_WORDS = [
     "also", "just", "really", "quite", "often", "perhaps", "maybe", "simply",
 ]
@@ -98,46 +105,47 @@ class TestRoundTrip:
 
 
 class TestEditRobustness:
+    def _embed_ok(self, emb: CAEmbedder, dec: CADecoder) -> object:
+        """固定 key+盐确定性嵌入，保证多次运行输出一致（无 flaky）。
+
+        嵌入失败即抛错：TEXT 锚位充足，固定参数下要么确定性成功、
+        要么确定性失败（用断言暴露，而非随机重试掩盖）。
+        """
+        r = emb.embed(TEXT, user_id=1001, session_salt=EDIT_SALT)
+        assert dec.decode(r.watermarked_text, EDIT_SALT).success, \
+            "固定参数嵌入失败（TEXT 应有充足锚位）"
+        return r
+
     def test_insert_10_words(self):
-        key = generate_master_key()
-        emb, dec = CAEmbedder(key), CADecoder(key)
-        # 先确保嵌入成功（短文本有概率失败），最多重试 5 次
-        for _ in range(5):
-            r = emb.embed(TEXT, user_id=1001)
-            if dec.decode(r.watermarked_text, r.session_salt).success:
-                break
+        emb, dec = CAEmbedder(EDIT_KEY), CADecoder(EDIT_KEY)
+        r = self._embed_ok(emb, dec)
         rng = random.Random(1)
         ok = sum(
             1 for _ in range(10)
-            if (lambda t: dec.decode(t, r.session_salt).success)(
+            if (lambda t: dec.decode(t, EDIT_SALT).success)(
                 insert_attack(r.watermarked_text, 10, rng))
         )
         assert ok >= 7, f"插入 10 词存活率过低: {ok}/10"
 
     def test_delete_10_words(self):
-        key = generate_master_key()
-        emb, dec = CAEmbedder(key), CADecoder(key)
-        for _ in range(5):
-            r = emb.embed(TEXT, user_id=1001)
-            if dec.decode(r.watermarked_text, r.session_salt).success:
-                break
+        emb, dec = CAEmbedder(EDIT_KEY), CADecoder(EDIT_KEY)
+        r = self._embed_ok(emb, dec)
         rng = random.Random(2)
         ok = sum(
             1 for _ in range(10)
-            if (lambda t: dec.decode(t, r.session_salt).success)(
+            if (lambda t: dec.decode(t, EDIT_SALT).success)(
                 delete_attack(r.watermarked_text, 10, rng))
         )
         assert ok >= 7, f"删除 10 词存活率过低: {ok}/10"
 
     def test_mixed_heavy_edit(self):
-        key = generate_master_key()
-        emb, dec = CAEmbedder(key), CADecoder(key)
-        r = emb.embed(TEXT, user_id=1001)
+        emb, dec = CAEmbedder(EDIT_KEY), CADecoder(EDIT_KEY)
+        r = self._embed_ok(emb, dec)
         rng = random.Random(3)
         attacked = delete_attack(
             insert_attack(r.watermarked_text, 10, rng), 10, rng
         )
-        d = dec.decode(attacked, r.session_salt)
+        d = dec.decode(attacked, EDIT_SALT)
         # 20 次混合编辑后可能失败，但绝不能解出错误的用户 ID
         assert (not d.success) or d.user_id == 1001
 

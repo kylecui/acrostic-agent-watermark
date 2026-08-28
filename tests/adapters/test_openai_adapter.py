@@ -131,7 +131,8 @@ class FakeAsyncClient:
 class TestWrapSyncClient:
     def test_sync_client_content_watermarked(self):
         client = FakeClient()
-        wm = Watermarker()
+        # LONG_TEXT 是通用英文文本，零感词典命中稀疏 → 显式 default 词林
+        wm = Watermarker(codec_mode="default")
         wrap_openai_client(client, wm)
 
         resp = client.chat.completions.create(
@@ -146,7 +147,8 @@ class TestWrapSyncClient:
         """改写后的文本可用同一个 Watermarker 溯源。"""
         registry = UIDRegistry(backend="memory")
         registry.register("alice", uid=0x1234)
-        wm = Watermarker(registry=registry)
+        # LONG_TEXT 是通用英文文本，零感词典命中稀疏 → 显式 default 词林
+        wm = Watermarker(registry=registry, codec_mode="default")
         client = wrap_openai_client(FakeClient(), wm)
 
         resp = client.chat.completions.create(model="gpt-4o", messages=[])
@@ -221,7 +223,8 @@ class TestWrapSyncClient:
 class TestWrapAsyncClient:
     def test_async_client_content_watermarked(self):
         client = FakeAsyncClient()
-        wm = Watermarker()
+        # LONG_TEXT 是通用英文文本，零感词典命中稀疏 → 显式 default 词林
+        wm = Watermarker(codec_mode="default")
         wrap_async_openai_client(client, wm)
 
         async def run():

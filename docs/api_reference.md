@@ -83,6 +83,7 @@ result = wm.trace(
     match_margin_ratio: float | None = 0.3,  # v0.10 起默认 0.3 自适应置信系数（见下）
     bands: list[int] | None = None,      # v0.7 自适应路径的带列表（embed 返回，需回传）
     n_bits: int | None = None,           # v0.7 自适应路径的编码位数
+    archived_uid: int | None = None,     # v0.11 嵌入时存档的 UID（盐外证据，见下）
 ) -> TraceResult
 ```
 
@@ -90,6 +91,20 @@ result = wm.trace(
 逐带 z 检测），存在性阈值用 null 线性模型或 `adaptive_intercept/slope`；
 不传则走旧 `detect`（default 词典），两者检测口径不同，trace 时务必
 回传 embed 返回的 `bands/n_bits`。
+
+**盐外证据（v0.11，防路径依赖）**：`archived_uid` 是嵌入时存档的 UID
+真值（meta/服务端存档持有）。攻击下"检出"本质盐无关——解码 UID 常失真，
+错误盐也可能检出一个（失真）UID；仅靠解码 UID 归因会在裸 API/多盐扫描
+场景下把结果归给错误用户。传入 `archived_uid` 后，trace 在归因前做
+盐外交叉校验：解码 UID 与存档 UID 不满足 `_uid_alias_match`（见下）即
+置 `attribution_abstain=True`、`uid/user=None`，绝不输出可能错误的归因。
+CLI `find-meta` / server `/v1/trace` 持 meta 时自动传入；直接调 `trace()`
+的 API 消费者应显式回传嵌入时存档的 UID。
+
+`_uid_alias_match(uid, archived_uid, n_bits)` 掩码对齐语义：解码 UID 与
+存档 UID 精确相等，或按 `n_bits` 掩码 `uid == (archived_uid & ((1<<n_bits)-1))`
+视为一致（`n_bits=0` 非自适应时只认精确相等）；`archived_uid` 为数字字符串
+时自动转 int。
 
 **软判决注册库匹配（v0.7 鲁棒性增强；v0.10 起默认启用）**：`soft_match=True`
 时，用 `GreenlistCodec.soft_match` 对注册库全部 UID 逐带 z 打点积分
@@ -432,7 +447,9 @@ trace 退出码：0=检出水印，2=未检出。
 ```json
 // 请求
 {"text": "...", "session_salt": "<hex>", "seal": {...}, "language": "en",
- "bands": [2,5,9], "n_bits": 6}   // v0.7：自适应路径需回传 bands/n_bits
+ "bands": [2,5,9], "n_bits": 6, "archived_uid": 17}   // v0.7：自适应路径需回传 bands/n_bits
+// v0.11：archived_uid 可选，嵌入时存档的 UID（盐外证据）；传入后解码 UID
+// 与存档 UID 交叉校验，不一致即 abstain（绝不归因到错误用户）
 // session_salt/seal 可选；seal 结构同 embed 响应
 
 // 响应
