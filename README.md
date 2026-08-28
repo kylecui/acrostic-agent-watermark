@@ -61,10 +61,22 @@ pip install acrostic-agent-watermark
 aawm keygen -o key.json
 aawm registry add agent-cuiyin --registry reg.json
 
-# CLI 嵌入 + 溯源
-aawm embed input.txt --key key.json --user agent-cuiyin --registry reg.json -o marked.txt
-aawm trace marked.txt --key key.json --registry reg.json --meta marked.meta.json
+# 嵌入 + 溯源（生产必须标定：用同领域未加水印的正常输出做 null 校准）
+aawm embed input.txt --key key.json --user agent-cuiyin --registry reg.json \
+      --calibrate-corpus ./corpus/ -o marked.txt
+aawm trace marked.txt --key key.json --registry reg.json --meta marked.meta.json \
+      --calibrate-corpus ./corpus/
 ```
+
+> **⚠️ 标定前置（生产必须）**：`--calibrate-corpus` 传入几十篇**同领域**
+> 未加水印的正常输出文本（agent 平时产出即可）。未标定时默认阈值对
+> 短文本检出率不足（≤800 字基本不可检出），标定后显著降低误报并
+> 提升短文本检出。忘记标定最常见的后果是 trace 报"未检出"。
+>
+> **⚠️ 弱嵌入警告**：embed 输出 meta.json 里的 `weak_embed` 字段为弱嵌入
+> 标志——自检存在性余量 <1.5× 阈值时置 `true`（CLI 同时打印警告）。
+> 此时文本信号不足（极短文本 / 词典命中稀疏），事后 trace 可能漏检或
+> 归因 abstain，应加大文本长度或换用词典密度更高的语料再嵌。
 
 > 源码安装（开发用）：`pip install -e .`，详见 [docs/user_guide.md §2](docs/user_guide.md)。
 
@@ -75,6 +87,8 @@ from aawm.plugins import Watermarker
 
 wm = Watermarker.from_config("key.json", "registry.json")
 result = wm.embed(agent_output, user_id="agent-cuiyin")
+if result.weak_embed:
+    print("⚠ 弱嵌入：文本信号不足，事后可能漏检——请加大文本或换语料")
 # 发布 result.watermarked_text，存档 result.session_salt + result.seal
 
 # 事后溯源
@@ -213,13 +227,15 @@ v0.2 API（`Embedder` / `Decoder`，位置索引锚点）仍可用，供对比�
 
 ## 项目状态
 
-✅ **v0.10 对抗归因防御（324 项测试通过）**：
+✅ **v0.10 对抗归因防御（331 项测试通过）**：
 - **归因置信度 `attribution_confidence`**：`判别力 × 容量充分性`，独立于存在性 confidence——对抗场景最危险的失败模式是"高置信度错误归因"（存在性存活但 UID 解错、仍输出错误用户），由新分数显式编码"归因有多大可能对"
 - **abstain 协议**：`attribution_confidence < 0.5` 时 `attribution_abstain=True`，uid/user 置 None、CLI 退出码 3、server 返回"不可判定"——宁可不说也不说错
 - **软判决默认防御**：`trace(soft_match=True, match_margin_ratio=0.3)` 成为默认（原为关闭）；margin 门限拒绝时不再回退硬解码 UID（那正是"自信地错"的来源）
+- **find-meta 盐外证据裁决**：`aawm find-meta` / `/v1/find-meta` 不再"取第一个检出"——攻击下存在性统计盐无关（同一文本多条盐都会"检出"），裁决改为**段哈希内容证据优先 + 解码 UID 与存档交叉校验**：解码与存档不一致、多候选检出冲突均输出"不可判定"（exit 3），绝不输出可能错误的 UID/用户（修复验证报告 §8.2 的 "匹配 meta=doc_00, UID=0x0000" 错误结论）
+- **embed 弱嵌入警告**：embed 自检存在性余量 <1.5× 阈值时 `weak_embed=True`、`margin_ratio` 给出余量值（CLI 打印警告、server 返回字段）——短文本/词典稀疏的固有容量约束显式暴露，不再静默弱嵌入
 - **低容量掩码碰撞兜底**：自适应 k-bit 空间内注册库 UID 掩码碰撞（如 n_bits=6 下 UID 1/65 均 mask 成 1）时归因在数学上不可能对，cap=0 一票否决
 - **标定锚点**：判别力映射基于跨语料实测（错误匹配 gap/√n_dict 上界 ≈0.22，正确匹配均值 0.5~0.7）；`gap_ok_lo=0.4` 保证 margin 门限 0.3 之上仍有归因余量
-- **规划 C**：经验校准曲线（对不同文本长度/攻击强度实测校准 gap→AC 映射）作为持续优化方向
+- **规划 C**：经验校准曲线（对不同文本长度/攻击强度实测校准 gap→AC 映射）作为持续优化方向；盐正确性校验已由段哈希内容证据在 find-meta 层落地
 
 ✅ **v0.9 英文零感词典（318 项测试通过）**：
 - **英文 zero_cost 落地**：中英文现在都走零感词典（中文 136 组 / 英文 133 组拼写变体+功能副词+安全对），消除"英文恒走 default 词林"的不对称

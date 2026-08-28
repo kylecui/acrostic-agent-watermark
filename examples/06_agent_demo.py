@@ -25,26 +25,60 @@ from aawm.plugins.adapters.openai_v1 import wrap_openai_client
 # ======================================================================
 # 1. 模拟 LLM：Agent 的底层模型（真实场景换成 openai.OpenAI()）
 # ======================================================================
+# v0.9 起英文默认走 zero_cost 零感词典。该模式依赖文本中的词典命中量
+# （拼写变体/功能副词/安全对）：通用英文需 ≥600 词、词典密集文本可
+# 更低；短文本会弱嵌入（embed 返回 weak_embed=True，trace 可能漏检）。
+# 这里模拟一份 576 词的英文分析报告作为 LLM 输出。
+LLM_OUTPUT = (
+    "We need to analyze the data and organize the project before we can make a final decision. "
+    "The team will prioritize the critical tasks and minimize the risk of unexpected errors. "
+    "However, the results clearly demonstrate a significant improvement over the previous version. "
+    "The whole system remains simple and easy to use, which is a genuine advantage for new users. "
+    "The final outcome will be published in the annual report and highlighted in the summary. "
+    "We should verify the evidence before we choose the best option for the entire process. "
+    "The process was altered to reduce errors and improve the overall outcome of the project. "
+    "Almost every example shows the same pattern throughout the entire period of the study. "
+    "The supervisor will allocate the resources and assign the tasks to the appropriate teams. "
+    "We need to highlight the main factors and strengthen the framework of the whole system. "
+    "The team gathered all the data and prepared a comprehensive summary for the final report. "
+    "Eventually, the platform will support a global and modern interface for all users. "
+    "We frequently discuss the precise requirements before we start the actual work. "
+    "The results are usually consistent, although occasionally the data varies across different periods. "
+    "We should immediately evaluate the impact and assess the potential risks before we proceed. "
+    "The main goal is to achieve a beneficial outcome while maintaining a reliable and sufficient process. "
+    "We aim to optimize the workflow and visualize the entire pipeline in a clear manner. "
+    "The team decided to postpone the release until we completely finish the remaining tasks. "
+    "We need to emphasize the key findings and underscore the important implications for future work. "
+    "The system should remain flexible enough to accommodate different types of requests. "
+    "We can demonstrate the value of the approach through a simple example and a concrete instance. "
+    "The overall perspective of the team is to choose a suitable method and follow the appropriate procedure. "
+    "We must ensure that every part of the system remains consistent across different platforms. "
+    "The researchers are eager to recognize the contribution of every member of the group. "
+    "We should decrease the number of errors and reduce the amount of redundant work. "
+    "The project has a clear purpose and a well-defined aim that everyone understands. "
+    "We can obtain the necessary evidence from multiple sources and verify the results carefully. "
+    "The new version will incorporate the feedback and amend the earlier mistakes. "
+    "We should acknowledge the previous achievements and build upon the established foundation. "
+    "It is important to protect the sensitive data and safeguard the entire system from threats. "
+    "The team will continue to monitor the situation and adjust the strategy as needed. "
+    "We can classify the results by type and kind, then compare each factor and element. "
+    "The final decision will be based on the evidence and proof that we collect during the study. "
+    "We need to establish a common ground and a shared perspective before we proceed further. "
+    "The system was designed to handle a huge volume of data and process it efficiently. "
+    "We should make the necessary amendments and revise the document before the final submission. "
+    "Every period and phase of the project has its own challenges and opportunities. "
+    "The goal and objective of this initiative is to improve the overall quality of the service. "
+    "We can measure the impact and effect of each change through the collected data. "
+    "The purpose and aim of the review is to identify the main benefits and advantages."
+)
+
+
 class FakeChatCompletions:
-    """模拟 openai.chat.completions：固定返回一段长英文文本。"""
+    """模拟 openai.chat.completions：固定返回一份英文分析报告（576 词）。"""
 
     def create(self, *args, **kwargs):
         class Msg:
-            content = (
-                "The platform collects telemetry from every distributed agent "
-                "working in the fleet. Each agent watches a big stream of events, "
-                "keeps a small record of important changes, and builds a short "
-                "summary at the end of the reporting window. A strong supervisor "
-                "groups the results into a common view, so the whole system stays "
-                "easy to inspect. When an agent finds a hard problem it cannot fix "
-                "alone, it sends a quick alert to the central team and asks for "
-                "help. The team then checks whether the issue is new or old, "
-                "whether it is critical or minor, and whether a fast patch is "
-                "possible without a full restart of the service. The platform also "
-                "supports a strong audit trail that records every important change "
-                "made by any agent in the system, so a careful reviewer can always "
-                "find the root cause of a hard problem."
-            )
+            content = LLM_OUTPUT
 
         class Choice:
             message = Msg()
@@ -79,16 +113,22 @@ def main() -> None:
 
     watermarker = Watermarker(registry=registry)
 
-    # 存档：每次发布的 session_salt（溯源必需，可公开，写 DB/日志）
+    # 存档：每次发布的溯源元数据（溯源必需，可公开，写 DB/日志）
+    # zero_cost 自适应模式必须存档 bands/n_bits（编码的带集元数据）——
+    # 没有它 trace 无法重建自适应解码路径（回退会误码/漏检）。
     archive = {}
 
     def on_embed(result, ctx):
-        """中间件嵌入成功后的回调——把 salt 存档。
+        """中间件嵌入成功后的回调——把溯源元数据存档。
 
         没有这一步，中间件嵌入的水印事后无法溯源。
         result.user_id 是实际嵌入的 UID（int），用它作为存档键。
         """
-        archive[result.user_id] = result.session_salt
+        archive[result.user_id] = {
+            "session_salt": result.session_salt,
+            "bands": list(result.bands),
+            "n_bits": result.n_bits,
+        }
 
     # --- 关键：一行包装 LLM 客户端，Agent 输出自动嵌水印 + salt 自动存档 ---
     llm = wrap_openai_client(FakeLLM(), watermarker, on_embed=on_embed)
@@ -133,8 +173,14 @@ def main() -> None:
     bob_uid = registry.resolve_alias("bob")
     print(f"\n[事件] 用户 bob 把输出泄露到了公开渠道：\n  {leaked[:60]}...")
 
-    # 验证方拿到泄露文本 + 存档的 salt，即可溯源
-    trace = watermarker.trace(leaked, session_salt=archive[bob_uid])
+    # 验证方拿到泄露文本 + 存档的溯源元数据，即可溯源
+    bob_meta = archive[bob_uid]
+    trace = watermarker.trace(
+        leaked,
+        session_salt=bob_meta["session_salt"],
+        bands=bob_meta["bands"],
+        n_bits=bob_meta["n_bits"],
+    )
 
     print("\n[溯源] 验证方对泄露文本的判定：")
     print(f"  检出水印: {trace.watermarked}")

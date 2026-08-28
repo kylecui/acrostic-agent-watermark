@@ -262,6 +262,154 @@ class TestCLI:
         # JSONL 记录标签带行号，正确记录是第 2 行
         assert "salts.jsonl:2" in result.stdout
 
+    # ------------------------------------------------------------------
+    # find-meta 最终裁决（_adjudicate_find_meta）单元测试：
+    # 攻击下"存在性盐无关"——错误盐也会检出；裁决必须用段哈希内容
+    # 证据 + 存档 UID 交叉校验，不确定即 abstain（VERIFICATION_REPORT
+    # §8.2：+20% 同义替换曾输出 "匹配 meta=doc_00, UID=0x0000" 错误结论）。
+    # ------------------------------------------------------------------
+
+    def _mk_trace(self, *, watermarked=True, uid=7, n_bits=8, ac=0.8,
+                  abstain=False):
+        from aawm.plugins.facade import TraceResult
+        return TraceResult(
+            watermarked=watermarked,
+            uid=None if (not watermarked or abstain) else uid,
+            user=None,
+            hamming_dist=-1,
+            confidence=0.8,
+            existence_score=30.0,
+            tampered=None,
+            n_bits=n_bits if watermarked else 0,
+            attribution_confidence=ac,
+            attribution_abstain=abstain,
+        )
+
+    def test_adjudicate_clean_match(self):
+        """干净文本：段哈希命中 + 解码 UID 与存档一致 → match。"""
+        from aawm.cli import _adjudicate_find_meta
+        ranked = [(3, 5, "doc_00", {})]
+        detections = [(3, "doc_00", self._mk_trace(uid=7), 7)]
+        kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+        assert kind == "match" and label == "doc_00"
+
+    def test_adjudicate_uid_distortion_abstains(self):
+        """正确 meta 解码 UID 失真（解码 0 ≠ 存档 17）→ abstain，
+        绝不输出可能错误的 UID（报告 §8.2 的 UID=0x0000 形态）。"""
+        from aawm.cli import _adjudicate_find_meta
+        ranked = [(3, 5, "doc_00", {})]
+        detections = [(3, "doc_00", self._mk_trace(uid=0), 17)]
+        kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+        assert kind == "abstain" and label == "doc_00"
+        assert "失真" in reason
+
+    def test_adjudicate_uid_mask_alias_ok(self):
+        """自适应 k-bit 掩码对齐视为一致（解码低 n_bits 位等于存档截断值）。"""
+        from aawm.cli import _adjudicate_find_meta
+        # 存档 0x1234，n_bits=8，解码 0x34 → 掩码对齐
+        ranked = [(3, 5, "doc_00", {})]
+        detections = [(3, "doc_00", self._mk_trace(uid=0x34, n_bits=8), 0x1234)]
+        kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+        assert kind == "match"
+
+    def test_adjudicate_hash_priority_over_false_detect(self):
+        """内容证据优先：无内容证据的错误 meta 检出，不改判给它——
+        宁可 abstain 在段哈希锁定的 meta 上。"""
+        from aawm.cli import _adjudicate_find_meta
+        ranked = [
+            (4, 5, "doc_00", {}),   # 内容命中，但 trace 未检出（重度改写）
+            (0, 5, "doc_01", {}),   # 无内容证据，却"检出"且 UID 与存档一致
+        ]
+        detections = [(0, "doc_01", self._mk_trace(uid=0x22), 0x22)]
+        kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+        assert kind == "abstain" and label == "doc_00"
+        assert "水印未检出" in reason
+
+    def test_adjudicate_no_hash_multi_detect_conflict(self):
+        """无段哈希 + 多候选检出且 UID 均失真 → abstain（错误盐巧合风险）。"""
+        from aawm.cli import _adjudicate_find_meta
+        ranked = [(0, 5, "doc_00", {}), (0, 5, "doc_01", {})]
+        detections = [
+            (0, "doc_00", self._mk_trace(uid=0x11), 0x22),
+            (0, "doc_01", self._mk_trace(uid=0x33), 0x44),
+        ]
+        kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+        assert kind == "abstain" and label is None
+        assert "无法区分真伪" in reason
+
+    def test_adjudicate_no_hash_single_match(self):
+        """无 seal（--no-sign）meta：唯一检出且解码与存档一致 → match。"""
+        from aawm.cli import _adjudicate_find_meta
+        ranked = [(0, 5, "doc_00", {})]
+        detections = [(0, "doc_00", self._mk_trace(uid=7), 7)]
+        kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+        assert kind == "match" and label == "doc_00"
+
+    def test_find_meta_syn20_scene_no_wrong_uid(self):
+        """场景回归护栏：多候选攻击场景下，CLI find-meta 绝不得输出
+        与存档 UID 不一致的错误 UID（VERIFICATION_REPORT §8.2 的
+        "匹配 meta=doc_00, UID=0x0000" 形态）——要么正确、要么不可判定。"""
+        from aawm.cli import _cmd_find_meta
+        from aawm.plugins.facade import TraceResult
+
+        # 构造 3 份 meta 存档：doc_00 为正确来源（存档 UID=7），
+        # 其余为干扰。嫌疑文本来自 doc_00 但被重写（无段哈希命中）。
+        # 正确 meta trace 解码失真（uid=0≠7，存在性仍存活——攻击典型形态），
+        # 干扰 meta 检出且 UID 与各自存档"碰巧一致"（错误盐巧合）。
+        # 裁决必须 abstain 而非取第一个检出。
+        detections = [
+            (0, "doc_00", TraceResult(
+                watermarked=True, uid=0, user=None, hamming_dist=-1,
+                confidence=0.8, existence_score=30.0, tampered=None,
+                n_bits=8, attribution_confidence=0.8,
+                attribution_abstain=False), 7),
+            (0, "doc_01", TraceResult(
+                watermarked=True, uid=0x22, user=None, hamming_dist=-1,
+                confidence=0.6, existence_score=20.0, tampered=None,
+                n_bits=8, attribution_confidence=0.6,
+                attribution_abstain=False), 0x22),
+        ]
+        ranked = [
+            (0, 5, "doc_00", {}),
+            (0, 5, "doc_01", {}),
+            (0, 5, "doc_02", {}),
+        ]
+        from aawm.cli import _adjudicate_find_meta
+        kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+        assert kind == "abstain"
+        # 关键：绝不落到"检出且存档一致"的错误 meta 上
+        assert label is None or label != "doc_01"
+
+    def test_trace_meta_uid_mismatch_abstains(self, tmp_path):
+        """trace --meta 盐外证据校验：解码 UID 与存档 UID 不一致 → 输出
+        "不可判定" exit 3，绝不输出可能错误的 UID
+        （VERIFICATION_REPORT §8.2：干净泄露仍 UID 误解码 0x14≠117）。"""
+        from tests.test_e2e_integration import _long_zh_text
+
+        key_file = tmp_path / "key.json"
+        self._run_cli("keygen", "--output", str(key_file))
+
+        target = tmp_path / "target.txt"
+        target.write_text(_long_zh_text(), encoding="utf-8")
+        marked = tmp_path / "marked.txt"
+        self._run_cli("embed", str(target), "--key", str(key_file),
+                      "--user", "7", "--codec-mode", "zero_cost",
+                      "-o", str(marked))
+        meta_file = marked.with_suffix(".meta.json")
+
+        # 篡改存档 UID（8 ≠ 真实 7）→ 解码交叉校验必须 abstain
+        meta = json.loads(meta_file.read_text(encoding="utf-8"))
+        meta["user_id"] = 8
+        bad_meta = tmp_path / "bad.meta.json"
+        bad_meta.write_text(json.dumps(meta), encoding="utf-8")
+
+        r = self._run_cli("trace", str(marked), "--key", str(key_file),
+                          "--meta", str(bad_meta))
+        assert r.returncode == 3, r.stdout + r.stderr
+        assert "不可判定" in r.stdout
+        # 关键：绝不输出错误 UID
+        assert "解码 UID" not in r.stdout
+
     def test_embed_trace_stdin(self, tmp_path):
         key_file = tmp_path / "key.json"
         self._run_cli("keygen", "--output", str(key_file))
@@ -326,6 +474,64 @@ class TestServer:
             assert resp.status_code == 200
             data = resp.json()
             assert data["watermarked"] is True
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_trace_archived_uid_mismatch_abstains(self, app_client):
+        """/v1/trace 盐外证据校验：archived_uid 与解码 UID 不一致 → abstain
+        （绝不输出可能错误的 UID；修复报告 §8.2 干净泄露 UID 误解码）。"""
+        from aawm.plugins import Watermarker
+        from aawm.server.api import set_watermarker
+        from tests.test_e2e_integration import _long_zh_text
+
+        wm = Watermarker(codec_mode="zero_cost")
+        set_watermarker(wm)
+        r = wm.embed(_long_zh_text(), user_id=7)
+
+        _, client = app_client
+        try:
+            # archived_uid=8 与真实 7 不一致（任意掩码下 7&mask ≠ 8&mask）
+            resp = await client.post("/v1/trace", json={
+                "text": r.watermarked_text,
+                "session_salt": r.session_salt.hex(),
+                "bands": r.bands,
+                "n_bits": r.n_bits,
+                "archived_uid": 8,
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["attribution_abstain"] is True
+            assert data["uid"] is None
+            assert data["user"] is None
+        finally:
+            await client.aclose()
+
+    @pytest.mark.asyncio
+    async def test_trace_archived_uid_match_ok(self, app_client):
+        """/v1/trace 盐外证据校验：archived_uid 与解码一致 → 正常归因。"""
+        from aawm.plugins import Watermarker
+        from aawm.server.api import set_watermarker
+        from tests.test_e2e_integration import _long_zh_text
+
+        wm = Watermarker(codec_mode="zero_cost")
+        set_watermarker(wm)
+        r = wm.embed(_long_zh_text(), user_id=7)
+
+        _, client = app_client
+        try:
+            resp = await client.post("/v1/trace", json={
+                "text": r.watermarked_text,
+                "session_salt": r.session_salt.hex(),
+                "bands": r.bands,
+                "n_bits": r.n_bits,
+                "archived_uid": 7,
+            })
+            assert resp.status_code == 200
+            data = resp.json()
+            assert data["watermarked"] is True
+            assert data["attribution_abstain"] is False
+            assert data["uid"] == 7 & ((1 << r.n_bits) - 1)
         finally:
             await client.aclose()
 

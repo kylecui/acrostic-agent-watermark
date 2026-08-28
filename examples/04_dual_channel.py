@@ -142,14 +142,18 @@ def main() -> None:
     print()
 
     # ---- 场景 2：篡改一段 ----
-    # 注意目标选 B 不会替换的非词典词（reporting/window/quarter 都不在词典），
-    # 确保 replace 一定落在嵌入后的文本上
+    # 篡改点从嵌入后文本动态选取：嵌入器会按随机密钥把部分词典词替换成
+    # 变体，硬编码 "reporting window" 在部分密钥下会被改写导致断言失败
+    # （flaky）。这里取第 1 段尾部连续 4 个词替换为语义反转短语——目标
+    # 必然存在于嵌入后文本，替换后段落必然变化。
     paras = marked.split("\n\n")
-    assert "reporting window" in paras[0], "篡改目标必须存在于嵌入后文本"
-    paras[0] = paras[0].replace(
-        "at the end of the reporting window", "at the beginning of the reporting quarter"
+    toks = paras[0].split(" ")
+    k = max(0, len(toks) - 12)
+    paras[0] = " ".join(
+        toks[:k] + ["at", "the", "very", "start"] + toks[k + 4:]
     )
     tampered = "\n\n".join(paras)
+    assert tampered != marked, "篡改未生效"
     v2 = binder.verify(tampered, seal)
     rep2 = codec.detect(tampered)
     print("[场景 2] 篡改第 3 段（语义反转攻击）")

@@ -70,10 +70,17 @@ result = wm.embed(agent_output, user_id="user-alice")
 # 发布 result.watermarked_text
 # 存档：result.session_salt + result.bands + result.n_bits   ← 三者缺一不可
 
+if result.weak_embed:
+    # v0.10：弱嵌入警告——自检存在性余量 <1.5× 阈值（短文本/词典稀疏）。
+    # 文本信号不足，事后 trace 可能漏检或归因 abstain；应加大文本或换语料再嵌。
+    print(f"⚠ 弱嵌入 margin={result.margin_ratio:.2f}，建议加大文本再嵌")
+
 trace = wm.trace(suspect_text,
                  session_salt=result.session_salt,
                  bands=result.bands,        # 不传会退化到 default 检测口径
                  n_bits=result.n_bits)
+if trace.watermarked and trace.attribution_abstain:
+    print("检出该文档含水印，但归因置信不足——不可判定具体用户（防对抗误归因）")
 ```
 
 CLI 等价写法：
