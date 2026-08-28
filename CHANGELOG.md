@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.12.0 (2026-08-28)
+
+主线：开箱体验（P0 产品化）——标定从"专家步骤"变成"一条命令"，短文本从"可能悄悄漏检"变成"明确分级仍嵌入"。
+
+### P0-1 `aawm calibrate` 命令（一次标定、处处复用）
+
+- 新增 `aawm calibrate <corpus> | --demo -o calibration.json`：产出标定文件（null 阈值模型 + p0 词频表）
+- `--demo` 用包内置示例语料（5 篇中文技术散文，随 wheel 分发 `data/demo_corpus/`），开箱 30 秒体验全流程
+- **p0_vocab 词频表机制**：词频表盐无关（按盐无关全词典词集 `_all_words` 统计），运行时用当前密钥/盐重算精确 p0，与现场 corpus 标定**数学等价**——标定文件 ~900 字节即等效携带整个语料
+- null 模型密钥无关：同一份标定文件跨密钥复用；embed/trace/serve/proxy/find-meta 统一 `--calibration FILE`
+- Python：`Watermarker(calibration=...)` / `from_config(calibration=...)` 接受 dict 或文件路径；`calibrate_null_model(corpus)` + `export_calibration()`
+
+### P0-2 快速开始"必然成功"路径
+
+- README 快速开始改写：keygen → registry → `calibrate --demo` → embed `--calibration` → trace（含无文本时用包内置示例长文直接体验的命令）
+- user_guide / api_reference / plugin_guide 全面统一为标定文件流程（消除 README 与 user_guide 的标定方式矛盾）；修正 meta 文件名示例（`marked.meta.json`）
+
+### P0-3 容量预检 + 可靠性分级（短文本不拒嵌）
+
+- `EmbedResult.reliability`：`high`（容量 ≥10 bit，中文约 ≥1200 字）/ `medium`（6-9 bit，检出常存活、归因可能失败）/ `low`（<6 bit 或 weak_embed，结论仅供参考）
+- CLI embed 输出 `[可靠性]` 分级说明（low 附原因与建议）；meta.json 写入 `reliability`；未标定运行打印 `[提示]` 引导 calibrate
+- `server /v1/embed` 响应新增 `reliability` 字段；proxy salt 归档记录新增 `reliability`
+- `wm.estimate_capacity(text)`：嵌入前容量预检（不改文本，随机盐估计）；`Watermarker.reliability_tier()` 静态分级规则
+
+### 测试
+
+- 新增 `tests/test_calibration.py`（9 项）：calibrate CLI 端到端、标定文件与 corpus 等价性、跨密钥复用、路径传参、reliability 分级、estimate_capacity、短文本不拒嵌
+
 ## 0.11.1 (2026-08-28)
 
 - CI：新增 PyPI Trusted Publisher 发布 workflow（push tag `v*` → test → build → publish，OIDC 免 token）
