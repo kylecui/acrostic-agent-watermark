@@ -5,7 +5,9 @@
     aawm registry add <alias> [--uid N]  注册用户
     aawm registry list                   列出所有用户
     aawm registry find <uid>             查 UID 对应别名
-    aawm embed --key <file> --user <id> [--registry <file>] <input.txt> [-o marked.txt]
+    aawm calibrate <corpus目录> -o calibration.json [--demo]
+                                         一次性拟合标定文件（embed/trace 复用）
+    aawm embed --key <file> --user <id> [--registry <file>] [--calibration <file>] <input.txt> [-o marked.txt]
     aawm trace --key <file> [--registry <file>] [--salt <hex>] <suspect.txt>
     aawm find-meta --key <file> <suspect.txt> <meta目录或glob>  查找匹配的 meta
     aawm serve --key <file> [--registry <file>] --port 8765
@@ -44,6 +46,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_keygen(args)
     elif args.command == "registry":
         return _cmd_registry(args)
+    elif args.command == "calibrate":
+        return _cmd_calibrate(args)
     elif args.command == "embed":
         return _cmd_embed(args)
     elif args.command == "trace":
@@ -113,6 +117,76 @@ def _cmd_registry(args: argparse.Namespace) -> int:
 
 
 # ----------------------------------------------------------------------
+# calibrate
+# ----------------------------------------------------------------------
+
+def _load_corpus(path: str) -> List[str]:
+    """标定语料：目录（全部 .txt/.md）或单文件（UTF-8 文本）。"""
+    p = Path(path)
+    if p.is_dir():
+        corpus = []
+        for f in sorted(p.glob("*.txt")) + sorted(p.glob("*.md")):
+            corpus.append(f.read_text(encoding="utf-8"))
+        if not corpus:
+            raise SystemExit(f"错误: 语料目录 {path} 下没有 .txt/.md 文件")
+        return corpus
+    if not p.is_file():
+        raise SystemExit(f"错误: 语料路径不存在: {path}")
+    return [p.read_text(encoding="utf-8")]
+
+
+def _demo_corpus_dir() -> Path:
+    """包内置示例标定语料目录（pip 装完即用，快速开始零准备）。"""
+    return Path(__file__).resolve().parent / "data" / "demo_corpus"
+
+
+def _cmd_calibrate(args: argparse.Namespace) -> int:
+    """一次性拟合 null 阈值模型 + 词典词频表，产出可复用标定文件。"""
+    ks = KeyStore.from_any(key_file=args.key, master_key=args.key_hex)
+    codec_mode = args.codec_mode or "zero_cost"
+
+    if args.demo:
+        corpus_dir = _demo_corpus_dir()
+        corpus = _load_corpus(str(corpus_dir))
+        print(f"使用包内置示例语料: {corpus_dir}（{len(corpus)} 篇）")
+        print("注意: 示例语料为中文技术散文，仅适合快速体验/演示；")
+        print("      生产请用同领域真实语料（agent 平时的正常输出）标定。")
+    else:
+        if not args.corpus:
+            raise SystemExit("错误: 需要 <corpus> 路径或 --demo 二选一")
+        corpus = _load_corpus(args.corpus)
+        print(f"语料: {args.corpus}（{len(corpus)} 篇，共 "
+              f"{sum(len(t) for t in corpus)} 字符）")
+        if len(corpus) < 3:
+            print("警告: 语料不足 3 篇，null 模型将无法拟合（需要更多样本）",
+                  file=sys.stderr)
+
+    wm = Watermarker(keystore=ks, codec_mode=codec_mode)
+    wm.calibrate_null_model(corpus)
+    cal = wm.export_calibration()
+
+    out = args.output or "calibration.json"
+    Path(out).write_text(
+        json.dumps(cal, indent=2, ensure_ascii=False), encoding="utf-8")
+
+    print(f"\n标定完成 → {out}")
+    for lang, entry in cal["null_model"].items():
+        print(f"  [{lang}] null 比率模型: μ={entry['mu']:.3f}, "
+              f"阈值比率={entry['threshold_ratio']:.3f}")
+        n_vocab = len(cal.get("p0_vocab", {}).get(lang, {}))
+        print(f"  [{lang}] p0 词频表: {n_vocab} 个词典词")
+    if not cal["null_model"]:
+        print("  （无语言条目——语料过少或语言未覆盖）", file=sys.stderr)
+
+    print("\n后续使用（一次标定、处处复用，无需每次传语料）:")
+    print(f"  aawm embed input.txt --key key.json --user alice "
+          f"--calibration {out} -o marked.txt")
+    print(f"  aawm trace marked.txt --key key.json "
+          f"--calibration {out} --meta marked.meta.json")
+    return 0
+
+
+# ----------------------------------------------------------------------
 # embed
 # ----------------------------------------------------------------------
 
@@ -151,6 +225,7 @@ def _cmd_embed(args: argparse.Namespace) -> int:
             "n_bits": result.n_bits,
             "margin_ratio": result.margin_ratio,
             "weak_embed": result.weak_embed,
+            "reliability": result.reliability,
         }
         if result.seal:
             meta["seal"] = {
@@ -170,12 +245,26 @@ def _cmd_embed(args: argparse.Namespace) -> int:
     if result.codec_mode != "default":
         print(f"[自适应] 模式={result.codec_mode}, 容量={result.capacity} bit, "
               f"编码={result.n_bits} bit, bands={result.bands}", file=sys.stderr)
-    if result.weak_embed:
-        print(f"[警告] 弱嵌入：自检余量={result.margin_ratio:.2f} < 1.5，"
-              f"文本信号不足，事后 trace 可能漏检或归因 abstain。"
-              f"建议加长文本（中文 ≥1200 字 / 英文词典密集 ≥600 词）或",
+    # 可靠性分级（v0.12）：略短文本不拒绝嵌入，但明确标注可靠性降低
+    rel = result.reliability
+    if rel == "high":
+        print(f"[可靠性] high —— 容量充足且信号达标，检出与归因均可靠",
               file=sys.stderr)
-        print(f"       改用词典命中更高的文本。", file=sys.stderr)
+    elif rel == "medium":
+        print(f"[可靠性] medium —— 容量中等（{result.capacity} bit）：存在性"
+              f"检出通常存活，但 UID 归因可能失败。建议加长文本（中文 "
+              f"≥1200 字）以提升归因可靠性", file=sys.stderr)
+    else:
+        cause = (f"自检余量={result.margin_ratio:.2f} < 1.5"
+                 if result.weak_embed else f"容量不足（{result.capacity} bit < 6）")
+        print(f"[可靠性] low —— 可靠性降低（{cause}），事后 trace 可能漏检"
+              f"或归因 abstain。建议：加长文本（中文 ≥1200 字 / 英文词典"
+              f"密集 ≥600 词），或聚合多条输出后再嵌入", file=sys.stderr)
+    if result.codec_mode != "default" and not wm._null_model:
+        print("[提示] 本次嵌入未标定（默认阈值对短文本检出率不足）。"
+              "建议：aawm calibrate ./corpus -o calibration.json，"
+              "之后 embed/trace 加 --calibration calibration.json",
+              file=sys.stderr)
     return 0
 
 
@@ -635,7 +724,7 @@ def _cmd_proxy(args: argparse.Namespace) -> int:
 # ----------------------------------------------------------------------
 
 def _make_watermarker(args: argparse.Namespace, ks, reg) -> Watermarker:
-    """按 CLI 参数构建 Watermarker（codec_mode / 标定语料 / 补充词典）。"""
+    """按 CLI 参数构建 Watermarker（codec_mode / 标定 / 补充词典）。"""
     kwargs = {}
     codec_mode = getattr(args, "codec_mode", None) or "zero_cost"
     # 注意：必须总是显式传 codec_mode——Watermarker 默认 zero_cost，
@@ -643,21 +732,20 @@ def _make_watermarker(args: argparse.Namespace, ks, reg) -> Watermarker:
     # 语言回退掩盖，英文 zero_cost 落地后暴露）
     kwargs["codec_mode"] = codec_mode
     calib_path = getattr(args, "calibrate_corpus", None)
+    calibration_path = getattr(args, "calibration", None)
     if calib_path:
         # 标定语料：目录（全部 .txt/.md）或单文件（UTF-8 文本）
-        p = Path(calib_path)
-        if p.is_dir():
-            corpus = []
-            for f in sorted(p.glob("*.txt")) + sorted(p.glob("*.md")):
-                corpus.append(f.read_text(encoding="utf-8"))
-        else:
-            corpus = [p.read_text(encoding="utf-8")]
-        kwargs["calibrate_corpus"] = corpus
+        kwargs["calibrate_corpus"] = _load_corpus(calib_path)
+    elif calibration_path:
+        # 标定文件（aawm calibrate 产出）：免语料、免现场拟合
+        p = Path(calibration_path)
+        if not p.is_file():
+            raise SystemExit(f"错误: 标定文件不存在: {calibration_path}")
+        kwargs["calibration"] = json.loads(p.read_text(encoding="utf-8"))
     supp_path = getattr(args, "supplementary_dict", None)
     if supp_path:
         # 补充词典：JSON 文件 {词: [同义词, ...]}
-        import json as _json
-        kwargs["supplementary_dict"] = _json.loads(
+        kwargs["supplementary_dict"] = json.loads(
             Path(supp_path).read_text(encoding="utf-8"))
     return Watermarker(keystore=ks, registry=reg,
                        language=getattr(args, "language", None) or "auto",
@@ -674,7 +762,12 @@ def _add_codec_options(parser: argparse.ArgumentParser) -> None:
                              "hybrid=零感+补充词典（配 --supplementary-dict）；"
                              "default=全词林旧行为，不推荐——实测病句率高")
     parser.add_argument("--calibrate-corpus", dest="calibrate_corpus",
-                        help="p0/null 标定语料（目录或文件路径）")
+                        help="p0/null 标定语料（目录或文件路径）；每次运行"
+                             "现场拟合，大语料慢——推荐先 aawm calibrate "
+                             "产出标定文件再用 --calibration")
+    parser.add_argument("--calibration", dest="calibration",
+                        help="标定文件路径（aawm calibrate 产出）；一次标定"
+                             "处处复用，embed/trace 务必用同一份")
     parser.add_argument("--supplementary-dict", dest="supplementary_dict",
                         help="补充词典 JSON（hybrid 模式用）：{词: [同义词, ...]}")
 
@@ -690,6 +783,23 @@ def _make_parser() -> argparse.ArgumentParser:
     p_keygen = sub.add_parser("keygen", help="生成 master_key")
     p_keygen.add_argument("--output", "-o", help="输出文件路径")
     p_keygen.add_argument("--env", help="输出 export 环境变量格式")
+
+    # calibrate
+    p_calib = sub.add_parser(
+        "calibrate", help="一次性拟合标定文件（null 阈值模型 + p0 词频表）")
+    p_calib.add_argument("corpus", nargs="?", default=None,
+                         help="标定语料：目录（*.txt/*.md）或单文件路径")
+    p_calib.add_argument("--demo", action="store_true",
+                         help="使用包内置示例语料（快速体验用，生产请用同领域语料）")
+    p_calib.add_argument("--key", help="密钥文件路径（可选——null 模型与密钥无关，"
+                                       "p0 词频表在运行时按你的密钥重算）")
+    p_calib.add_argument("--key-hex", dest="key_hex", help="密钥 hex（直接传入）")
+    p_calib.add_argument("--output", "-o", default="calibration.json",
+                         help="输出标定文件路径（默认 calibration.json）")
+    p_calib.add_argument("--codec-mode", choices=["default", "zero_cost", "hybrid"],
+                         default=None,
+                         help="codec 模式（默认 zero_cost；default 模式无自适应路径，"
+                              "无需标定）")
 
     # registry
     p_reg = sub.add_parser("registry", help="UID 注册库管理")

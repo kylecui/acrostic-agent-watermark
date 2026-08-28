@@ -55,11 +55,16 @@ from aawm.plugins import Watermarker
 wm = Watermarker.from_config(
     "key.json", "registry.json",
     codec_mode="zero_cost",                       # default / zero_cost / hybrid
-    calibrate_corpus=open("normal_outputs.txt", encoding="utf-8").readlines(),
+    calibration="calibration.json",               # v0.12 标定文件（aawm calibrate 产出，推荐）
 )
+# 或现场语料标定（大语料每次构造都要拟合，慢）：
+# wm = Watermarker.from_config("key.json", "registry.json",
+#     codec_mode="zero_cost",
+#     calibrate_corpus=open("normal_outputs.txt", encoding="utf-8").readlines())
 ```
 
-标定语料是**未加水印的正常 Agent 输出**（几十篇即可，纯文本、无结构要求）。
+标定用 `aawm calibrate ./corpus/ -o calibration.json` 一次性产出，语料是
+**未加水印的正常 Agent 输出**（几十篇即可，纯文本、无结构要求）。
 `hybrid` 模式额外传 `supplementary_dict={词: [同义词, ...]}` 补带，适合需要
 比 `zero_cost` 更大容量的场景。`default` 模式行为与 v0.6 完全一致（向后兼容）。
 
@@ -70,10 +75,11 @@ result = wm.embed(agent_output, user_id="user-alice")
 # 发布 result.watermarked_text
 # 存档：result.session_salt + result.bands + result.n_bits   ← 三者缺一不可
 
-if result.weak_embed:
-    # v0.10：弱嵌入警告——自检存在性余量 <1.5× 阈值（短文本/词典稀疏）。
-    # 文本信号不足，事后 trace 可能漏检或归因 abstain；应加大文本或换语料再嵌。
-    print(f"⚠ 弱嵌入 margin={result.margin_ratio:.2f}，建议加大文本再嵌")
+if result.reliability != "high":
+    # v0.12：容量分级。medium（6-9 bit）归因可能失败；low（<6 bit 或弱嵌入）
+    # 结论仅供参考。短文本不会被拒嵌——照常嵌水印并标注降级，聚合多份
+    # 存档仍可溯源；如需单篇可靠归因，加长文本（中文 ≥1200 字）再嵌。
+    print(f"⚠ 可靠性 {result.reliability}，建议加长文本")
 
 trace = wm.trace(suspect_text,
                  session_salt=result.session_salt,
@@ -88,8 +94,8 @@ CLI 等价写法：
 ```bash
 aawm embed input.txt --key key.json --user user-alice \
       --registry registry.json --codec-mode zero_cost \
-      --calibrate-corpus ./normal_outputs/ -o marked.txt
-aawm trace marked.txt --key key.json --registry registry.json --meta marked.txt.meta.json
+      --calibration calibration.json -o marked.txt
+aawm trace marked.txt --key key.json --registry registry.json --meta marked.meta.json
 ```
 
 `embed` 自动把 `bands/n_bits/capacity/codec_mode` 写进 `meta.json`，`trace

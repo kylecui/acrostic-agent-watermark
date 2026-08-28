@@ -32,12 +32,12 @@ AAWM 给 AI agent 产出的文本嵌入**人眼几乎无感、密钥可精确溯
 | `master_key` | 一把对称密钥（32 字节），**嵌入与溯源用同一把** | 生成后妥善保管，只在可信方之间流转 |
 | `UID` / 别名 | 每个用户一个编号（16-bit，0~65535），可配别名 | 用 `aawm registry add <别名>` 注册 |
 | `meta` 文件 | 每次嵌入生成的存档（`session_salt` + `seal` + `bands`） | **与交付物一同归档，溯源必用** |
-| `标定语料` | 一批**没有水印**的正常文本（与交付物同领域） | **生产必配**，否则检测阈值偏严会漏检 |
+| `标定` | 用同领域正常文本拟合检测阈值（`aawm calibrate` 产出标定文件） | **生产必配**，否则检测阈值偏严会漏检 |
 
 三个铁律：
 
 1. **meta 必须归档**。`session_salt` 决定码本映射——没有正确 meta，检测就像拿错字典，大概率漏检。
-2. **生产必须标定**。不标定时存在性阈值按最坏情况取（实测约 `1.6×带数`），中等信号文本会被漏检；标定后阈值按真实 null 分布（约 `1.0/带`）取值，检出可靠。
+2. **生产必须标定**。不标定时存在性阈值按最坏情况取（实测约 `1.6×带数`），中等信号文本会被漏检；标定后阈值按真实 null 分布（约 `1.0/带`）取值，检出可靠。用 `aawm calibrate ./corpus -o calibration.json` 一次标定，之后 embed/trace 统一传 `--calibration`。
 3. **嵌入失败绝不破坏交付物**（fail-open）。任何异常都透传原文。
 
 两条工作流：
@@ -131,9 +131,11 @@ aawm registry add bob   --registry reg.json
 aawm registry list --registry reg.json
 # [验证] 输出表格，含 alice=0x0001、bob=0x0002
 
-# 4) 准备标定语料（生产必配，见 §10.1）
-mkdir -p calib
-# 把若干篇与交付物同领域、没有水印的正常文本放进去（.txt/.md）
+# 4) 标定（生产必配，见 §10.1）
+# 快速体验：用包内置示例语料 30 秒产出标定文件
+aawm calibrate --demo -o calibration.json
+# 生产：用同领域正常文本标定（几十篇 .txt/.md 放一个目录）
+# aawm calibrate ./calib -o calibration.json
 ```
 
 > `key.json` 就是命脉：**丢失 = 历史水印全部无法溯源**，请立即备份并离线保存。不要把 key 提交进代码库。
@@ -147,7 +149,7 @@ mkdir -p calib
 ```bash
 aawm embed <输入文件> --key key.json --user alice \
       --registry reg.json --codec-mode zero_cost \
-      --calibrate-corpus ./calib -o marked.txt
+      --calibration calibration.json -o marked.txt
 ```
 
 | 参数 | 说明 |
@@ -157,7 +159,8 @@ aawm embed <输入文件> --key key.json --user alice \
 | `--key` / `--key-hex` | 密钥文件路径 / hex，二选一 |
 | `--registry` | 注册库路径（别名解析与溯源需要） |
 | `--codec-mode` | `zero_cost`（默认，零感）/ `hybrid`（+补充词典）/ `default`（旧词林，病句率高不推荐） |
-| `--calibrate-corpus` | 标定语料路径（目录或单文件），**生产必配** |
+| `--calibration` | 标定文件路径（`aawm calibrate` 产出），**生产必配**；一次标定处处复用，推荐方式 |
+| `--calibrate-corpus` | 标定语料路径（目录或单文件），每次运行现场拟合（大语料慢） |
 | `--supplementary-dict` | hybrid 模式的补充词典 JSON |
 | `--n-bits` | 编码位数（默认满容量；小于容量留冗余带抗替换） |
 | `--no-sign` | 不签信道 A（不做防篡改，不推荐） |
@@ -175,12 +178,14 @@ stderr 会打印统计行——**这是最重要的可验证输出**：
 ```
 [统计] UID=0x0001, 词典命中=48, 存在性=25.5
 [自适应] 模式=zero_cost, 容量=16 bit, 编码=16 bit, bands=[0,1,2,...,15]
+[可靠性] high —— 容量充足且信号达标，检出与归因均可靠
 ```
 
 **怎么读统计行**：
 - `词典命中` 是文本里被词典识别的词数。**低于 ~30 说明文本太短，trace 大概率检不出**（容量限制，见 §12）。
 - `容量` 是可用 bit 数。达到 16 bit 才能编码完整 UID；小于 16 bit 时 UID 取低 `n_bits` 位（k-bit 语义，配合注册库仍能匹配回用户）。
 - `存在性` 是嵌入后的信号强度，越高越稳。
+- `[可靠性]` 是容量分级：`high`（≥10 bit，中文约 ≥1200 字）检出归因均稳；`medium`（6-9 bit）检出常存活、归因可能失败；`low`（<6 bit 或弱嵌入）仅供参考。**短文本不会被拒嵌**——照常嵌水印并标注降级（meta.json 的 `reliability` 字段同值），聚合多份存档仍可溯源。
 
 ```bash
 # stdin / stdout 用法示例
@@ -191,7 +196,7 @@ cat report.md | aawm embed - --key key.json --user alice --registry reg.json > m
 
 ```bash
 aawm trace <可疑文件> --key key.json --registry reg.json \
-      --meta marked.meta.json --calibrate-corpus ./calib
+      --meta marked.meta.json --calibration calibration.json
 ```
 
 | 参数 | 说明 |
@@ -226,7 +231,7 @@ aawm trace <可疑文件> --key key.json --registry reg.json \
 
 ```bash
 aawm find-meta <可疑文件> <meta目录或glob> \
-      --key key.json --registry reg.json --calibrate-corpus ./calib
+      --key key.json --registry reg.json --calibration calibration.json
 ```
 
 - 候选可以是：目录（**递归**扫描 `*.meta.json` + proxy 盐归档 `*.jsonl`）、glob 模式、单文件，可多个。
@@ -373,12 +378,14 @@ from aawm.plugins import Watermarker
 # 一次性初始化（key 文件不存在会自动创建；registry 可省略）
 wm = Watermarker.from_config("key.json", "reg.json",
                              codec_mode="zero_cost",
-                             calibrate_corpus=["正常输出1", "正常输出2", ...])
+                             calibration="calibration.json")  # aawm calibrate 产出
 
 # 嵌入：agent 产出文本后、发布给用户前
 result = wm.embed(agent_output, user_id="alice")
+print(result.reliability)  # high / medium / low —— 容量分级（短文本降级不拒嵌）
 # 发布 result.watermarked_text
 # 存档 result.session_salt + result.bands（可公开，溯源必用）
+# 嵌入前可预估容量（不改文本）：k = wm.estimate_capacity(text)
 
 # 溯源：验证方拿到可疑文本后
 trace = wm.trace(suspect_text,
@@ -401,7 +408,8 @@ wm = Watermarker(
     language="auto",                                   # auto / zh / en
     codec_mode="zero_cost",                            # zero_cost / hybrid / default
     supplementary_dict={...},                          # hybrid 用
-    calibrate_corpus=[...],                            # 标定用，生产必配
+    calibrate_corpus=[...],                            # 现场语料标定（慢；推荐用下面的标定文件）
+    calibration="calibration.json",                    # 标定文件路径或 dict（aawm calibrate 产出）
 )
 ```
 
@@ -418,6 +426,7 @@ result = wm.embed(
 )
 # result.watermarked_text / .session_salt / .user_id / .user_alias
 #       / .seal / .bands / .capacity / .n_bits / .existence_score / .n_dict_words
+#       / .reliability（high/medium/low 容量分级）/ .margin_ratio / .weak_embed
 
 trace = wm.trace(
     text,
@@ -520,11 +529,13 @@ python examples/05_plugin_quickstart.py
 
 ```bash
 aawm serve --key key.json --registry reg.json --port 8765 \
-      --calibrate-corpus ./calib --log-level warning
+      --calibration calibration.json --log-level warning
 # [验证] 输出: AAWM 检测服务启动于 http://0.0.0.0:8765
 ```
 
-> **务必传 `--calibrate-corpus`**。实测：同样一篇水印文本，标定后 `trace` 检出（存在性 25.5 ≥ 标定阈值），不标定则漏检（默认阈值 26.6 > 25.5）。服务端不标定 = 线上漏检。
+> **务必标定**（`--calibration` 标定文件或 `--calibrate-corpus` 语料目录）。
+> 实测：同样一篇水印文本，标定后 `trace` 检出（存在性 25.5 ≥ 标定阈值），
+> 不标定则漏检（默认阈值 26.6 > 25.5）。服务端不标定 = 线上漏检。
 
 ### 7.2 端点
 
@@ -698,7 +709,7 @@ grep '"uid": 1' salts.jsonl | tail -1
 
 # 2. 用同一把 key 溯源（--salt 传 hex；有 seal/bands 也可直接 trace --meta）
 aawm trace suspect_leak.txt --key key.json --registry reg.json \
-  --salt <hex> --calibrate-corpus ./calib
+  --salt <hex> --calibration calibration.json
 # [验证] 输出 "检出水印: 是 / 解码 UID: 0x0001 / 匹配用户: alice"
 ```
 
@@ -716,7 +727,7 @@ aawm trace suspect_leak.txt --key key.json --registry reg.json \
 
 ```bash
 aawm trace marked_long.txt --key key.json --registry reg.json \
-      --meta marked_long.meta.json --calibrate-corpus ./calib
+      --meta marked_long.meta.json --calibration calibration.json
 # 检出水印: 是 / 解码 UID: 0x0001 / 匹配用户: alice (汉明距=0) / 篡改判定: 否
 ```
 
@@ -727,7 +738,7 @@ aawm trace marked_long.txt --key key.json --registry reg.json \
 mkdir -p metas && cp *.meta.json metas/
 
 # 拿到可疑文本后一键反查
-aawm find-meta suspect_leak.txt metas --key key.json --registry reg.json --calibrate-corpus ./calib
+aawm find-meta suspect_leak.txt metas --key key.json --registry reg.json --calibration calibration.json
 # 8/8 段匹配 → 信道 B 检出 UID=0x0001 → 结论: 匹配 meta = metas/marked_long.meta.json
 ```
 
@@ -751,12 +762,21 @@ aawm trace marked_long.txt --key key.json --registry reg.json
 
 **作用**：用一批"没有水印的正常文本"拟合 null 分布，把存在性阈值从保守默认值（约 `1.6×带数`）降到实测值（约 `1.0/带`）。不标定会漏检中等信号文本（实测一篇存在性 25.5 的文本，标定后检出、未标定漏检）。
 
-**怎么做**：
-- 收集 **50~100 篇**（最少十几篇）与交付物**同领域**的正常文本，不含交付物本身。
-- CLI：`--calibrate-corpus <目录>`（自动读目录下 `*.txt`/`*.md`）或单文件。
-- 技能包：`AAWM_CALIB=<目录>`。
-- Python：`Watermarker(..., calibrate_corpus=[...])`。
-- **嵌入与溯源两侧要一致**。
+**怎么做**（v0.12 起推荐标定文件，免每次现场拟合）：
+
+```bash
+# 1) 一次性标定（语料 = 50~100 篇同领域正常文本，最少十几篇）
+aawm calibrate ./calib -o calibration.json   # 生产
+aawm calibrate --demo -o calibration.json    # 快速体验（包内置示例语料）
+# 2) embed/trace/serve/proxy 统一传 --calibration calibration.json
+```
+
+- 标定文件携带 null 阈值模型 + p0 词频表（盐无关），运行时按当前密钥/盐
+  重算，与现场语料标定**数学等价**——文件路径与 corpus 路径可互换。
+- 旧方式仍支持：CLI `--calibrate-corpus <目录>`、技能包 `AAWM_CALIB=<目录>`、
+  Python `Watermarker(..., calibrate_corpus=[...])`。
+- Python：`Watermarker(..., calibration="calibration.json")`（路径或 dict 均可）。
+- **嵌入与溯源两侧要用同一份标定**（同一文件或同一语料）。
 
 ### 10.2 meta 归档（第二重要）
 
@@ -774,7 +794,7 @@ aawm trace marked_long.txt --key key.json --registry reg.json
 ### 10.4 上线前自查
 
 - [ ] `aawm embed` 的统计行：词典命中 ≥ 30、容量 ≥ 16 bit？
-- [ ] 已用同领域文本标定（`--calibrate-corpus` / `AAWM_CALIB`）？
+- [ ] 已标定（`aawm calibrate` + `--calibration` / `AAWM_CALIB`）？embed 输出 reliability=high（或知悉 medium/low 的降级风险）？
 - [ ] meta 已归档（本地 `<文件>.meta.json` 或 `metas/` 目录或盐归档）？
 - [ ] 用自己嵌入的文本跑一遍 `trace`，确认"检出水印: 是"？
 - [ ] `key.json` 已备份且未进代码库？
@@ -787,7 +807,7 @@ aawm trace marked_long.txt --key key.json --registry reg.json
 | 症状 | 原因 | 解法 |
 |---|---|---|
 | embed 统计行"词典命中"< 30 | 文本太短/词典覆盖不足 | 属容量限制（§12）；换 hybrid + 补充词典，或接受该文本无法可靠溯源 |
-| trace 输出"检出水印: 否"但信度/存在性不低 | 未标定，阈值偏严 | 配 `--calibrate-corpus` / `AAWM_CALIB` 后重试 |
+| trace 输出"检出水印: 否"但信度/存在性不低 | 未标定，阈值偏严 | 配 `--calibration` / `AAWM_CALIB` 后重试 |
 | trace 输出"检出水印: 否"，篡改判定也是"否" | meta 没传对 / 盲检 | 用 `find-meta` 找回正确 meta；确认 trace 传了 `--meta` 或 `--salt` |
 | hybrid 嵌入后 trace 漏检 | 溯源没传同一份补充词典 | 溯源加 `--supplementary-dict`（与嵌入同一份） |
 | 解码出乱码 UID（如 0x0098） | meta 取错（多份候选时盲取） | 用 `find-meta` 而非猜；trace_file.sh 已拒绝多候选猜测 |
@@ -806,7 +826,7 @@ aawm trace marked_long.txt --key key.json --registry reg.json
 2. **meta 是溯源前提**：`session_salt` 决定码本映射，错误/缺失 meta 会导致漏检。盲检"未检出"不能作为排除依据。
 3. **仅 UTF-8 文本**：图片/PDF/Office 等二进制不支持。
 4. **英文 UID 解码**：英文 codec 为统计解码，UID 有约 30% 误码率，建议用软判决路径。
-5. **未标定阈值偏严**：不配标定语料时存在性阈值保守，中等信号文本可能漏检（生产必配 `--calibrate-corpus`）。
+5. **未标定阈值偏严**：不配标定语料时存在性阈值保守，中等信号文本可能漏检（生产必配 `--calibration`）。
 6. **密钥轮换**：master_key 更换后旧水印无法再溯源（需并行期策略）。
 
 ---
@@ -818,8 +838,8 @@ aawm trace marked_long.txt --key key.json --registry reg.json
 | `aawm keygen -o key.json` | `master_key 已保存到 key.json` |
 | `aawm registry add alice --registry reg.json` | `注册成功: alice -> UID 0x0001 (1)` |
 | `aawm embed ... -o marked_long.txt` | `[统计] UID=0x0001, 词典命中=48, 存在性=25.5`，容量=16 bit |
-| `aawm trace ... --meta marked_long.meta.json --calibrate-corpus ./calib` | `检出水印: 是 / 匹配用户: alice (汉明距=0)`，退出码 0 |
-| 同命令**不带** `--calibrate-corpus` | `检出水印: 否`（阈值 26.6 > 25.5）——标定的必要性 |
+| `aawm trace ... --meta marked_long.meta.json --calibration calibration.json` | `检出水印: 是 / 匹配用户: alice (汉明距=0)`，退出码 0 |
+| 同命令**不带** `--calibration` | `检出水印: 否`（阈值 26.6 > 25.5）——标定的必要性 |
 | `aawm find-meta suspect_rewritten.txt metas/ ...` | `7/8 段匹配` → 信道 B 检出 alice；`篡改判定: 是 / 被改段落: [0]` |
-| `aawm serve ... --calibrate-corpus ./calib` + curl `/v1/trace` | `{"watermarked":true,"uid":1,"user":"alice",...}` |
+| `aawm serve ... --calibration calibration.json` + curl `/v1/trace` | `{"watermarked":true,"uid":1,"user":"alice",...}` |
 | `aawm proxy ...` + curl chat completion | 响应被水印化；`salts.jsonl` 追加记录（含 bands+seal） |

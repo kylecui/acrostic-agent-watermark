@@ -57,26 +57,39 @@
 # 安装（PyPI）
 pip install acrostic-agent-watermark
 
-# 初始化密钥和注册库
+# 1) 初始化密钥和用户注册库
 aawm keygen -o key.json
 aawm registry add agent-cuiyin --registry reg.json
 
-# 嵌入 + 溯源（生产必须标定：用同领域未加水印的正常输出做 null 校准）
+# 2) 一次性标定（--demo 用包内置示例语料，开箱 30 秒体验全流程）
+aawm calibrate --demo -o calibration.json
+
+# 3) 嵌入 + 溯源（embed/trace 必须用同一份标定文件）
 aawm embed input.txt --key key.json --user agent-cuiyin --registry reg.json \
-      --calibrate-corpus ./corpus/ -o marked.txt
-aawm trace marked.txt --key key.json --registry reg.json --meta marked.meta.json \
-      --calibrate-corpus ./corpus/
+      --calibration calibration.json -o marked.txt
+aawm trace marked.txt --key key.json --registry reg.json \
+      --calibration calibration.json --meta marked.meta.json
 ```
 
-> **⚠️ 标定前置（生产必须）**：`--calibrate-corpus` 传入几十篇**同领域**
-> 未加水印的正常输出文本（agent 平时产出即可）。未标定时默认阈值对
-> 短文本检出率不足（≤800 字基本不可检出），标定后显著降低误报并
-> 提升短文本检出。忘记标定最常见的后果是 trace 报"未检出"。
+没有现成文本？用包内置示例长文直接体验（约 5000 字中文，实测检出 + 归因全通过）：
+
+```bash
+DEMO=$(python -c "import aawm,os;print(os.path.join(os.path.dirname(aawm.__file__),'data','demo_corpus','agent_embedding_guide.md'))")
+aawm embed "$DEMO" --key key.json --user agent-cuiyin --registry reg.json \
+      --calibration calibration.json -o marked.txt
+```
+
+> **标定说明**：标定文件（`calibration.json`）携带 null 阈值模型与 p0 词频表，
+> **一次标定、处处复用**——embed/trace/serve 都传 `--calibration` 即可，无需
+> 每次现场拟合语料。`--demo` 语料是中文技术散文，仅适合快速体验；生产请用
+> 自己的同领域语料重新标定：`aawm calibrate ./corpus/ -o calibration.json`
+> （几十篇 agent 平时的正常输出即可）。未标定运行时 CLI 会打印 `[提示]` 引导。
 >
-> **⚠️ 弱嵌入警告**：embed 输出 meta.json 里的 `weak_embed` 字段为弱嵌入
-> 标志——自检存在性余量 <1.5× 阈值时置 `true`（CLI 同时打印警告）。
-> 此时文本信号不足（极短文本 / 词典命中稀疏），事后 trace 可能漏检或
-> 归因 abstain，应加大文本长度或换用词典密度更高的语料再嵌。
+> **可靠性分级**：embed 输出的 `reliability` 字段（meta.json 同名字段 + CLI
+> `[可靠性]` 行）按文本容量分级——`high`（容量 ≥10 bit，中文约 ≥1200 字）：
+> 检出与归因均稳定；`medium`（6-9 bit）：检出常存活，归因可能失败；
+> `low`（<6 bit 或弱嵌入）：结论仅供参考，建议加长文本再嵌。短文本**不会
+> 被拒绝**——照常嵌水印并标注降级，聚合多份存档仍可溯源。
 
 > 源码安装（开发用）：`pip install -e .`，详见 [docs/user_guide.md §2](docs/user_guide.md)。
 
@@ -85,11 +98,13 @@ Python SDK 3 行接入：
 ```python
 from aawm.plugins import Watermarker
 
-wm = Watermarker.from_config("key.json", "registry.json")
+# 标定文件随构造传入（与 CLI --calibration 等价）
+wm = Watermarker.from_config("key.json", "registry.json",
+                             calibration="calibration.json")
 result = wm.embed(agent_output, user_id="agent-cuiyin")
-if result.weak_embed:
-    print("⚠ 弱嵌入：文本信号不足，事后可能漏检——请加大文本或换语料")
+print(result.reliability)  # high / medium / low —— 短文本自动降级并说明
 # 发布 result.watermarked_text，存档 result.session_salt + result.seal
+# 嵌入前可预估容量：k = wm.estimate_capacity(text)（不含文本改动）
 
 # 事后溯源
 trace = wm.trace(suspect_text, session_salt=result.session_salt)
@@ -154,9 +169,11 @@ setup_hooks(watermarker, user_id="alice")   # crew.kickoff() 输出自动嵌水�
 ```python
 from aawm.plugins import Watermarker
 
-# 零感模式 + null 语料标定（显著降低误报）
+# 零感模式 + 标定文件（aawm calibrate 产出；显著降低误报）
 wm = Watermarker(codec_mode="zero_cost",
-                 calibrate_corpus=["正常输出文本1", "正常输出文本2", ...])
+                 calibration="calibration.json")
+# 或现场语料标定（大语料每次构造都要拟合，慢）：
+# wm = Watermarker(codec_mode="zero_cost", calibrate_corpus=[...])
 
 result = wm.embed(agent_output, user_id=42)  # 语言自动检测，中英均可
 # 发布 result.watermarked_text；存档 session_salt + bands + n_bits
@@ -171,13 +188,15 @@ if trace.watermarked:
           f"(存活带 {trace.active_bands}/{trace.capacity})")
 ```
 
-标定语料是**未加水印的正常输出**（几十篇即可）。CLI 等价命令：
+标定文件用 `aawm calibrate ./corpus/ -o calibration.json` 一次性产出
+（语料是**未加水印的正常输出**，几十篇即可）。CLI 等价命令：
 
 ```bash
+aawm calibrate ./corpus/ -o calibration.json
 aawm embed input.txt --key key.json --user 42 \
-      --codec-mode zero_cost --calibrate-corpus ./corpus/ -o marked.txt
-aawm trace marked.txt --key key.json --meta marked.txt.meta.json \
-      --codec-mode zero_cost --calibrate-corpus ./corpus/
+      --codec-mode zero_cost --calibration calibration.json -o marked.txt
+aawm trace marked.txt --key key.json --meta marked.meta.json \
+      --codec-mode zero_cost --calibration calibration.json
 ```
 
 > 英文零感词典对通用文本命中稀疏，容量通常小于中文与 default 词林——
