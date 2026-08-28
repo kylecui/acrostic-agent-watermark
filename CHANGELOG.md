@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.11.1 (2026-08-28)
+
+- CI：新增 PyPI Trusted Publisher 发布 workflow（push tag `v*` → test → build → publish，OIDC 免 token）
+- tests：import-error 测试守卫改为检测包已安装（`importlib.util.find_spec`）而非已加载（`sys.modules`），修复安装 langchain extras 的 CI 环境下误失败
+
 ## 0.11.0 (2026-08-28)
 
 自 0.9.0 以来三轮迭代，主线：将"宁可弃权也不错误归因"贯穿 API 层与运营层。
