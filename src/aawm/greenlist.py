@@ -383,6 +383,45 @@ class GreenlistCodec:
             if n > 0:
                 self._p0[b] = (g + pseudocount) / (n + 2.0 * pseudocount)
 
+    def dict_word_counts(self, corpus: Sequence[str]) -> Dict[str, int]:
+        """统计语料中词典命中的归一化词频表（标定文件 p0_vocab 用）。
+
+        词频表是盐无关的：p0(b) = Σ count(w)·green(w) / Σ count(w)
+        在任意盐下可由词频表精确重算（green 随盐变，词频不变）——
+        标定文件携带词频表即等效携带了整个语料（实测仅数百字节）。
+
+        注意按全词典词集（_all_words）统计而非当前盐的 _w2band：
+        可翻转组过滤（单色组剔除）随盐变化，按 _w2band 统计会漏掉
+        其他盐下才激活的词；应用端 calibrate_p0_from_counts 会按
+        当前盐的带映射跳过未激活词，两边正好对齐。
+        """
+        counts: Dict[str, int] = {}
+        for text in corpus:
+            for _raw, norm in self._tokenizer(text):
+                if norm is not None and norm in self._all_words:
+                    counts[norm] = counts.get(norm, 0) + 1
+        return counts
+
+    def calibrate_p0_from_counts(
+        self, word_counts: Dict[str, int], *, pseudocount: float = 1.0
+    ) -> None:
+        """由词频表（dict_word_counts 产出）重算逐带绿率 p0(b)。
+
+        与 calibrate_p0(corpus) 数学等价（同一条带聚合公式），
+        但无需语料原文——标定文件跨盐复用的关键：green(词) 用
+        当前 codec 的盐计算，词频表不变，p0 随盐精确更新。
+        """
+        agg: Dict[int, Tuple[int, int]] = {}
+        for w, c in word_counts.items():
+            b = self._w2band.get(w)
+            if b is None:
+                continue  # 词典升级后可能出现的旧词：忽略
+            n, g = agg.get(b, (0, 0))
+            agg[b] = (n + c, g + c * self.green(w))
+        for b, (n, g) in agg.items():
+            if n > 0:
+                self._p0[b] = (g + pseudocount) / (n + 2.0 * pseudocount)
+
     def _p0_of(self, band: int) -> float:
         return self._p0.get(band, 0.5)
 

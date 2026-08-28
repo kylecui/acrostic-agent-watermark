@@ -120,6 +120,7 @@ def create_proxy_app(
             "n_bits": result.n_bits,
             "codec_mode": result.codec_mode,
             "bands": list(result.bands or []),
+            "reliability": result.reliability,
             "has_seal": result.seal is not None,
         }
         if result.seal:

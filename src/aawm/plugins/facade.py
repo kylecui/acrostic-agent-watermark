@@ -16,8 +16,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import os
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..binding import BindingSeal, BindingVerdict, DocumentBinder
@@ -54,6 +57,14 @@ class EmbedResult:
         weak_embed: 弱嵌入标志（自适应模式）。自检未达 1.5×阈值标准时置
             True——embed 已尽力（换盐/换 rng 4 次），但文本信号不足，
             事后 trace 可能漏检或归因 abstain，调用方应据此警告用户。
+        reliability: 溯源可靠性分级（v0.12）。综合容量与自检余量给出
+            "high"/"medium"/"low"：
+            - high   容量 k>=10 且余量达标——窗口内检出与归因均可靠
+            - medium 6<=k<10——存在性检出通常存活，但 UID 归因可能失败
+            - low    k<6 或 weak_embed——文本过短/信号贴近阈值，事后
+                     trace 可能漏检或归因 abstain；建议加长文本或聚合
+                     多条输出后再嵌入
+            default 模式（容量不足会硬报错）嵌入成功即 "high"。
     """
     watermarked_text: str
     session_salt: bytes
@@ -69,6 +80,7 @@ class EmbedResult:
     n_bits: int = 0
     margin_ratio: float = 0.0
     weak_embed: bool = False
+    reliability: str = "high"
 
 
 @dataclass
@@ -209,7 +221,8 @@ class Watermarker:
         codec_mode: str = "zero_cost",
         supplementary_dict: Optional[Dict[str, List[str]]] = None,
         calibrate_corpus: Optional[List[str]] = None,
-    ) -> None:
+        calibration: Optional[Dict[str, Any]] = None,
+    ) -> "Watermarker":
         """Args:
             codec_mode: codec 模式（中英双语生效；v0.9 起英文也有零感词典）。
                 "zero_cost"— 零感词典（中文 136 组 / 英文拼写变体+副词+安全对，
@@ -219,7 +232,18 @@ class Watermarker:
                 "hybrid"   — 零感打底 + supplementary_dict 补带
             supplementary_dict: hybrid 模式的补充词典 {组名: [词列表]}
             calibrate_corpus: 无水印参考语料，构建 codec 时标定 p0
+                并现场拟合 null 存在性阈值模型（每次构造都要重新拟合，
+                大语料时慢——改用 calibration 文件一次性拟合复用）
+            calibration: 标定文件（`aawm calibrate` 产出的 JSON，
+                或 `export_calibration()` 的返回值）。传 dict 或 JSON
+                文件路径均可。装载已拟合的 null 阈值模型，免去运行时
+                拟合。与 calibrate_corpus 同时给出时 corpus 现场拟合
+                优先（p0 也会被标定，更准）
         """
+        if isinstance(calibration, (str, os.PathLike)):
+            # 便捷：直接传标定文件路径（与 CLI --calibration 一致）
+            calibration = json.loads(
+                Path(calibration).read_text(encoding="utf-8"))
         # 密钥
         if keystore is not None:
             self._keystore = keystore
@@ -255,9 +279,14 @@ class Watermarker:
         # 阈值 = m × (μ + 3σ)。m = 活动带数。
         # 仅当提供 calibrate_corpus 且非 default 模式时按语言分别计算
         self._null_model: Dict[bytes, Tuple[float, float]] = {}
+        # 标定文件的词典词频表（p0 跨盐重算用）：{lang_tag: {词: 次数}}
+        # 须在 _fit_null_model 之前初始化（_build_codec 会读它）
+        self._p0_vocab: Dict[bytes, Dict[str, int]] = {}
         if calibrate_corpus and codec_mode != "default":
             self._fit_null_model(calibrate_corpus, b"zh")
             self._fit_null_model(calibrate_corpus, b"en")
+        if calibration and not calibrate_corpus:
+            self._load_calibration(calibration)
 
     def _fit_null_model(self, corpus: List[str], lang_tag: bytes) -> None:
         """在 null 语料上拟合存在性阈值模型（自适应路径专用，按语言）。
@@ -294,6 +323,85 @@ class Watermarker:
         # 且 marked/null ratio 分离 4 倍以上，宽阈值无漏检代价
         self._null_model[lang_tag] = (mu, mu + 3.0 * sd)
 
+    def calibrate_null_model(self, corpus: List[str]) -> None:
+        """在 null 语料上拟合存在性阈值模型 + 词典词频表，供导出复用。
+
+        产出两部分（export_calibration 导出）：
+        1. null 阈值模型（μ/σ ratio，盐平均后盐无关）
+        2. 词典词频表 p0_vocab——p0 逐盐重算的关键：green(词) 随盐变，
+           词频不变，标定文件消费方在任意盐下重算即得与语料原文
+           数学等价的 p0（实测 docs 语料仅 ~900 字节）
+
+        拟合管线与"只持标定文件"的运行时完全一致（codec 先用词频表
+        标定 p0，再检测 null 语料），消费方无一致性坑。
+
+        语料要求：几十篇同领域无水印文本（≥3 篇即可拟合，但样本少
+        时阈值保守度不足）。
+        """
+        if self._codec_mode == "default":
+            raise ValueError("default 模式无自适应路径，无需 null 标定")
+        # 1. 词频表（先建，拟合管线即运行时管线；清空防陈旧条目）
+        self._p0_vocab = {}
+        for tag in (b"zh", b"en"):
+            codec = self._build_codec(generate_session_salt(), tag)
+            self._p0_vocab[tag] = codec.dict_word_counts(corpus)
+        # 2. null 阈值模型（_build_codec 此时已带词频表 p0）
+        self._fit_null_model(corpus, b"zh")
+        self._fit_null_model(corpus, b"en")
+
+    def export_calibration(self) -> Dict[str, Any]:
+        """导出当前标定为可 JSON 序列化的标定文件结构。
+
+        配合 calibrate_null_model 使用：
+            wm.calibrate_null_model(corpus)
+            json.dump(wm.export_calibration(), open("calibration.json", "w"))
+        embed/trace 侧用 Watermarker(calibration=...) 装载，或 CLI
+        --calibration calibration.json。大语料一次拟合、处处复用。
+        """
+        null_model = {}
+        for tag in (b"zh", b"en"):
+            nm = self._null_model.get(tag)
+            if nm:
+                null_model[tag.decode()] = {
+                    "mu": nm[0],
+                    "threshold_ratio": nm[1],
+                }
+        p0_vocab = {
+            tag.decode(): counts
+            for tag, counts in self._p0_vocab.items() if counts
+        }
+        return {
+            "version": 1,
+            "codec_mode": self._codec_mode,
+            "null_model": null_model,
+            "p0_vocab": p0_vocab,
+        }
+
+    def _load_calibration(self, calibration: Dict[str, Any]) -> None:
+        """装载 aawm calibrate / export_calibration 产出的标定文件。"""
+        if not isinstance(calibration, dict) or "null_model" not in calibration:
+            raise ValueError(
+                "calibration 结构不合法：应为 aawm calibrate 产出的 JSON "
+                "（含 null_model 字段）")
+        file_mode = calibration.get("codec_mode")
+        if file_mode and file_mode != self._codec_mode:
+            import warnings
+            warnings.warn(
+                f"标定文件的 codec_mode={file_mode!r} 与当前 "
+                f"{self._codec_mode!r} 不一致，阈值模型可能失准")
+        for lang, entry in calibration["null_model"].items():
+            try:
+                self._null_model[lang.encode()] = (
+                    float(entry["mu"]), float(entry["threshold_ratio"]))
+            except (KeyError, TypeError, ValueError) as e:
+                raise ValueError(f"calibration 语言条目 {lang!r} 不合法: {e}")
+        vocab = calibration.get("p0_vocab") or {}
+        for lang, counts in vocab.items():
+            if not isinstance(counts, dict):
+                raise ValueError(f"calibration p0_vocab[{lang!r}] 应为词频表 dict")
+            self._p0_vocab[lang.encode()] = {
+                str(w): int(c) for w, c in counts.items()}
+
     # ------------------------------------------------------------------
     # codec 构建
     # ------------------------------------------------------------------
@@ -311,30 +419,45 @@ class Watermarker:
         if lang_tag == b"zh":
             if self._codec_mode == "zero_cost":
                 from ..greenlist import build_zero_cost_zh_codec
-                return build_zero_cost_zh_codec(
+                codec = build_zero_cost_zh_codec(
                     self._master_key, session_salt,
                     calibrate_corpus=self._calibrate_corpus)
+                return self._apply_p0_vocab(codec, lang_tag)
             # hybrid
             if self._supplementary_dict is None:
                 raise ValueError("hybrid 模式需要 supplementary_dict")
             from ..greenlist import build_hybrid_zh_codec
-            return build_hybrid_zh_codec(
+            codec = build_hybrid_zh_codec(
                 self._master_key, session_salt,
                 supplementary_dict=self._supplementary_dict,
                 calibrate_corpus=self._calibrate_corpus)
+            return self._apply_p0_vocab(codec, lang_tag)
         # 英文 + zero_cost/hybrid → 英文零感词典路径
         if self._codec_mode == "hybrid":
             if self._supplementary_dict is None:
                 raise ValueError("hybrid 模式需要 supplementary_dict")
             from ..greenlist import build_hybrid_en_codec
-            return build_hybrid_en_codec(
+            codec = build_hybrid_en_codec(
                 self._master_key, session_salt,
                 supplementary_dict=self._supplementary_dict,
                 calibrate_corpus=self._calibrate_corpus)
+            return self._apply_p0_vocab(codec, lang_tag)
         from ..greenlist import build_zero_cost_en_codec
-        return build_zero_cost_en_codec(
+        codec = build_zero_cost_en_codec(
             self._master_key, session_salt,
             calibrate_corpus=self._calibrate_corpus)
+        return self._apply_p0_vocab(codec, lang_tag)
+
+    def _apply_p0_vocab(self, codec: GreenlistCodec, lang_tag: bytes) -> GreenlistCodec:
+        """标定文件的词频表 → 当前盐下的精确 p0（calibrate_corpus 缺席时）。
+
+        corpus 在场时 builder 已做 p0 标定（更准，语料原文全信息），
+        词频表仅在"只持标定文件"的消费方生效——两者数学等价。
+        """
+        vocab = self._p0_vocab.get(lang_tag)
+        if vocab and not self._calibrate_corpus:
+            codec.calibrate_p0_from_counts(vocab)
+        return codec
 
     # ------------------------------------------------------------------
     # 工厂方法
@@ -349,6 +472,7 @@ class Watermarker:
         codec_mode: str = "zero_cost",
         supplementary_dict: Optional[Dict[str, List[str]]] = None,
         calibrate_corpus: Optional[List[str]] = None,
+        calibration: Optional[Dict[str, Any]] = None,
     ) -> "Watermarker":
         """从配置文件创建（便捷方法）。
 
@@ -361,12 +485,15 @@ class Watermarker:
                 走词林，用户以为拿到零感）
             supplementary_dict: hybrid 模式补充词典
             calibrate_corpus: p0 标定语料
+            calibration: null 阈值标定（aawm calibrate 产出的 JSON；
+                传 dict 或 JSON 文件路径均可——大语料用它免去每次构造
+                重新拟合）
         """
         ks = KeyStore.from_file(key_file, create=True) if key_file else KeyStore()
         reg = UIDRegistry(backend="file", path=registry_file) if registry_file else UIDRegistry()
         return cls(keystore=ks, registry=reg, language=language,
                    codec_mode=codec_mode, supplementary_dict=supplementary_dict,
-                   calibrate_corpus=calibrate_corpus)
+                   calibrate_corpus=calibrate_corpus, calibration=calibration)
 
     # ------------------------------------------------------------------
     # 嵌入
@@ -479,6 +606,12 @@ class Watermarker:
         #    max_attempts 次仍不达标时静默返回余量最大的一次——这里显式暴露。
         weak_embed = adaptive and best_margin < 1.5
 
+        # 6.5 溯源可靠性分级（v0.12）：容量 + 余量 → high/medium/low。
+        #     略短文本不拒绝嵌入（存在性检测仍有价值），但明确标注
+        #     可靠性降低，调用方据此决定加长文本或聚合后再嵌。
+        reliability = ("high" if not adaptive
+                       else self.reliability_tier(k, weak_embed))
+
         # 5. 信道 A 签名（可选）
         seal = None
         if sign:
@@ -500,6 +633,7 @@ class Watermarker:
             n_bits=eff_bits,
             margin_ratio=best_margin if adaptive else 0.0,
             weak_embed=weak_embed,
+            reliability=reliability,
         )
 
     # ------------------------------------------------------------------
@@ -829,6 +963,45 @@ class Watermarker:
     # ------------------------------------------------------------------
     # 便捷方法
     # ------------------------------------------------------------------
+
+    def estimate_capacity(
+        self,
+        text: str,
+        *,
+        language: Optional[str] = None,
+    ) -> int:
+        """嵌入前容量预检：估算文本的有效容量 k（活动带数）。
+
+        不做嵌入，用随机盐构建 codec 估算。容量随盐有小幅波动
+        （活动带集不同），返回单次采样值；k>=10 通常可支撑高可靠
+        溯源，k<6 的事后归因大概率失败（见 EmbedResult.reliability）。
+
+        Args:
+            text: 待嵌入文本
+            language: 语言覆盖（默认自动检测）
+        """
+        lang = self._resolve_language(text, language)
+        lang_tag = b"zh" if lang == "zh" else b"en"
+        codec = self._build_codec(generate_session_salt(), lang_tag)
+        return codec.capacity(text)
+
+    @staticmethod
+    def reliability_tier(capacity: int, weak_embed: bool) -> str:
+        """容量 + 自检余量 → 溯源可靠性分级。
+
+        分级锚点来自五轮外部验证实测（VERIFICATION_REPORT §4.1/§9.2）：
+        k>=10（中文标定后约 1200 字）检出与归因双高；6<=k<10 检出
+        常存活但归因可能失败（800 字：检出 11/12、uid 9-10/12）；
+        k<6 检出与归因都不可靠（400 字：uid 5-7/12）。
+        weak_embed（余量<1.5）无论容量如何都降为 low。
+        """
+        if weak_embed:
+            return "low"
+        if capacity >= 10:
+            return "high"
+        if capacity >= 6:
+            return "medium"
+        return "low"
 
     def detect_only(
         self,

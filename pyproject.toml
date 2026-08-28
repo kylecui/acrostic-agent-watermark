@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "acrostic-agent-watermark"
-version = "0.11.1"
+version = "0.12.0"
 description = "Agent-level digital watermarking — universal Agent plugin for user ID traceability"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -30,7 +30,7 @@ aawm = "aawm.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-aawm = ["data/*.json"]
+aawm = ["data/*.json", "data/demo_corpus/*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
