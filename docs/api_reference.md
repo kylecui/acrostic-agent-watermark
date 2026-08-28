@@ -67,6 +67,8 @@ result = wm.embed(
     bias: float = 1.0,                  # 嵌入强度 [0,1]
     rng_seed: int | None = None,        # 指定后确定性嵌入
     n_bits: int | None = None,          # v0.7 自适应模式编码位数（None=满容量；<容量留冗余带抗替换）
+    uid_redundancy: int = 1,            # v0.13 UID 冗余份数 r（仅 zero_cost/hybrid；
+                                        #   k_uid=k//r，段落裁剪 50% 归因不翻转）
 ) -> EmbedResult
 ```
 
@@ -90,6 +92,11 @@ result = wm.trace(
     bands: list[int] | None = None,      # v0.7 自适应路径的带列表（embed 返回，需回传）
     n_bits: int | None = None,           # v0.7 自适应路径的编码位数
     archived_uid: int | None = None,     # v0.11 嵌入时存档的 UID（盐外证据，见下）
+    key_version: int | None = None,      # v0.13 嵌入时的密钥版本（meta 的 key_version；
+                                         #   轮换后旧水印按版本取钥溯源；None=active）
+    dict_version: str | None = None,     # v0.13 嵌入时的词典指纹（meta 的 dict_version；
+                                         #   传入时比对 → TraceResult.dict_version_match）
+    uid_layout: list | None = None,      # v0.13 UID 冗余布局（embed 的 uid_layout 回传）
 ) -> TraceResult
 ```
 
@@ -188,6 +195,11 @@ class EmbedResult:
     # v0.12 可靠性分级（default 模式恒 high；adaptive 按容量分级，不拒嵌）
     reliability: str = "high"      # high(≥10bit) / medium(6-9bit, 归因可能失败)
                                    #   / low(<6bit 或 weak_embed, 结论仅供参考)
+    # v0.13 新增
+    key_version: int = 1           # 嵌入所用密钥版本（轮换后 trace 按版本取钥）
+    dict_version: str = ""         # 词典指纹（SHA-256 前 16 hex，盐无关）
+    uid_layout: list = []          # UID 冗余布局（uid_redundancy>1 时非空，
+                                   #   trace(uid_layout=...) 多数表决还原）
 ```
 
 ## TraceResult
@@ -216,6 +228,12 @@ class TraceResult:
     capacity: int = 0              # 嵌入时的容量
     n_bits: int = 0                # 嵌入时的编码位数
     active_bands: int = 0          # 攻击后仍存活的活动带数
+    # v0.13 新增
+    key_version: int = 1           # 本次 trace 实际使用的密钥版本
+    dict_version: str = ""         # 本次重建 codec 的词典指纹
+    dict_version_match: bool | None = None  # 与传入 dict_version（meta 存档）
+                                   #   比对结果；None=未传；False=溯源侧词典
+                                   #   与嵌入侧不一致，归因结论需谨慎
 ```
 
 ## DetectionThresholds
@@ -249,7 +267,15 @@ KeyStore.from_env(var="AAWM_MASTER_KEY") -> KeyStore          # hex 环境变量
 KeyStore.from_any(master_key=None, *, key_file=None, env_var=None) -> KeyStore
 
 ks.get() -> bytes                    # 取密钥
-ks.save(path) -> None                # 持久化（自动 chmod 600）
+ks.get_version(version: int) -> bytes  # v0.13 按版本取钥（轮换后旧水印溯源）
+ks.active_version -> int            # v0.13 当前 active 版本号
+ks.versions() -> list[int]          # v0.13 全部版本号
+ks.rotate() -> int                  # v0.13 追加新版本并切换 active（旧版保留，
+                                     #   双钥并行期旧水印按 key_version 溯源）
+ks.drop_version(version: int)       # v0.13 应急删除（禁删 active；删后该版本
+                                     #   嵌入的水印永久无法溯源）
+ks.save(path) -> None                # 持久化（自动 chmod 600；v2 多版本格式，
+                                     #   兼容加载 legacy v1 单钥格式）
 ks.export_env(var="AAWM_MASTER_KEY") -> str  # "export AAWM_MASTER_KEY=<hex>"
 
 generate_key(length=32) -> bytes     # 模块级便捷函数
@@ -431,6 +457,7 @@ aawm registry find UID [--registry F]             # UID 支持 0x 前缀
 aawm embed INPUT --key F --user ID [--registry F] [--language L] [--no-sign] [-o OUT]
 aawm trace INPUT --key F [--registry F] [--salt HEX | --meta META.json]
 aawm serve --key F [--registry F] [--port 8765] [--log-level info]
+aawm rotate-key --key F [--drop N]                # v0.13 密钥轮换 / 应急删除
 # INPUT 为 "-" 时读 stdin；embed -o 时同时生成 OUT.meta.json（salt+seal）
 ```
 
@@ -445,6 +472,24 @@ aawm embed input.txt --key key.json --user 42 \
 #   --n-bits N                                 # embed 用：编码位数（None=满容量）
 ```
 
+**v0.13 新增选项**（`embed` / `trace` / `find-meta` / `serve`）：
+
+```bash
+aawm embed input.txt --key key.json --user 42 \
+      --meta-store metas.jsonl --audit-log audit.jsonl -o marked.txt
+#   --meta-store FILE                          # meta 后端存储（.jsonl / .db=SQLite）；
+#                                               #   嵌入后自动存档，find-meta --meta-store
+#                                               #   段落哈希反查（无需逐份 meta 文件）
+#   --audit-log FILE                           # append-only JSONL 审计日志；事件含
+#                                               #   op/source/uid/text_sha256
+#   --uid-redundancy N                         # embed 用：UID 冗余份数（zero_cost/hybrid）
+aawm trace marked.txt --key key.json --meta marked.meta.json --audit-log audit.jsonl
+#   （trace 自动读 meta 的 key_version/dict_version/uid_layout 并回传）
+aawm find-meta suspect.txt --key key.json --meta-store metas.jsonl
+aawm serve --key key.json --audit-log audit.jsonl
+#   serve 额外暴露 GET /metrics（Prometheus 格式指标端点）
+```
+
 **v0.12 标定命令**：
 
 ```bash
@@ -455,9 +500,10 @@ aawm calibrate --demo -o calibration.json      # 包内置示例语料（快速�
 ```
 
 - `embed` 的 meta.json 额外写入 `codec_mode / bands / capacity / n_bits / reliability`
+  （v0.13 追加 `key_version / dict_version / uid_layout`）
 - `embed` stderr 输出 `[可靠性] high|medium|low`（容量分级；短文本降级不拒嵌）
 - `trace` 读 meta.json 自动回传 `bands/n_bits`；stderr 输出
-  `自适应: 容量=… 存活带=…`
+  `自适应: 容量=… 存活带=…`（v0.13 起同时回传 key_version/dict_version/uid_layout）
 - `serve` 接受 `--codec-mode / --calibration / --calibrate-corpus` 配置服务端 watermarker
 
 trace 退出码：0=检出水印，2=未检出。
@@ -534,6 +580,82 @@ meta 散失时，在候选存档中反查来源（与 CLI `aawm find-meta` 同�
 
 > 服务端 watermarker 模式由 `aawm serve --codec-mode … --calibration …` 配置；<br>
 > 也可在代码里 `set_watermarker(Watermarker(codec_mode="zero_cost", …))` 后 `create_app()`。
+
+---
+
+## v0.13 新增模块
+
+### 审计（`aawm.audit`）
+
+```python
+from aawm.audit import AuditLogger, set_audit_logger, audit, text_fingerprint
+
+text_fingerprint(text) -> str           # SHA-256 前 16 hex（事件统一携带）
+
+logger = AuditLogger("audit.jsonl")     # append-only JSONL
+set_audit_logger(logger)                # 全局注册（进程内）
+audit({"op": "trace", "source": "cli", "uid": 4660,
+       "text_sha256": text_fingerprint(text)})
+logger.read_all() -> list[dict]         # 读回全部事件（跳过半行容错）
+# 事件 schema：op ∈ {embed, trace, find_meta}，source ∈ {cli, server}
+```
+
+### meta 存储（`aawm.meta_store`）
+
+```python
+from aawm.meta_store import FileMetaStore, SqliteMetaStore, open_meta_store
+
+store = open_meta_store("metas.jsonl")  # .jsonl→FileMetaStore，.db→SqliteMetaStore
+rid = store.put(record)                 # 存档（record 含 text_sha256/段哈希等，
+                                       #   自动规范化并建索引），返回自增 id
+store.get(rid) -> dict | None
+store.find_by_text_hash(fp) -> list[dict]   # 全文哈希反查
+store.find_by_para_hash(h) -> list[dict]    # 段哈希反查（删减/节选文本定位）
+store.close()
+# CLI：embed --meta-store 自动存档；find-meta --meta-store 段落哈希反查
+```
+
+### 指标（`aawm.server.metrics`）
+
+```python
+from aawm.server.metrics import Metrics
+
+m = Metrics()
+m.inc("aawm_trace_total", result="hit")            # 计数器（带标签）
+m.observe("aawm_trace_duration_seconds", 0.031)    # 观测值（count/sum）
+with m.time_it("aawm_trace_duration_seconds"):     # 计时上下文管理器
+    ...
+m.render() -> str                                  # 文本格式（Prometheus 兼容）
+# aawm serve 自动暴露 GET /metrics（trace 检出/未检/abstain 计数 + 耗时分布）
+```
+
+### 密钥轮换（运维流程）
+
+```bash
+aawm rotate-key --key key.json
+#   密钥已轮换: 版本 1 → 2（active）；旧版本 1 保留（双钥并行期）
+aawm rotate-key --key key.json --drop 1
+#   应急删除版本 1（确认泄漏后；该版本水印将永久无法溯源，禁删 active）
+```
+
+轮换后旧水印溯源：embed 写入 meta 的 `key_version` 由 `trace --meta` 自动
+回传，facade 按版本取钥——**双钥并行期旧水印无需任何额外操作**。
+
+### CRC-16 与 UID 冗余（算法层）
+
+```python
+from aawm import CAConfig, crc16, compute_crc
+
+crc16(data: bytes) -> int              # CRC-16/CCITT-FALSE（0x1021 / 初值 0xFFFF）
+compute_crc(data, bits=16) -> int      # 按位宽分发（8→crc8，16→crc16）
+
+CAConfig(crc_bits=16)                  # v0.13 默认；payload=16 UID + 16 CRC（32 桶投票）
+CAConfig(crc_bits=8)                   # v0.12 及以前的行为（24 桶）
+# ⚠ 迁移：v0.13 之前嵌入的文本需显式 crc_bits=8 解码；位宽不匹配时安全失败
+```
+
+UID 冗余见 `embed(uid_redundancy=r)`（上文 `embed()` 签名）：
+`k_uid = k // r`，`EmbedResult.uid_layout` 需随 meta 归档并在 trace 回传。
 
 ---
 

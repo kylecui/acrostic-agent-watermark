@@ -65,6 +65,12 @@ class EmbedResult:
                      trace 可能漏检或归因 abstain；建议加长文本或聚合
                      多条输出后再嵌入
             default 模式（容量不足会硬报错）嵌入成功即 "high"。
+        key_version: 嵌入所用密钥版本（v0.13 P1-6）。meta 存档；
+            trace 时传入以用对应版本密钥解码——密钥轮换不破坏历史溯源。
+        dict_version: 词典指纹（v0.13 P2-9）。trace 重建 codec 后比对，
+            mismatch 说明词典已变更（带映射失效，会漏检）。
+        uid_layout: UID 冗余布局（v0.13 P2-8，uid_redundancy>1 时非空）：
+            layout[bit] = 编码该位的带列表。trace 时传入走冗余解码。
     """
     watermarked_text: str
     session_salt: bytes
@@ -81,6 +87,9 @@ class EmbedResult:
     margin_ratio: float = 0.0
     weak_embed: bool = False
     reliability: str = "high"
+    key_version: int = 1
+    dict_version: str = ""
+    uid_layout: List[List[int]] = field(default_factory=list)
 
 
 @dataclass
@@ -112,6 +121,12 @@ class TraceResult:
         bands: 自适应检测使用的带列表（None=旧路径）
         capacity: 自适应容量 k（自适应路径）
         active_bands: 攻击后仍存活的活动带数（自适应路径）
+        key_version: 实际使用的密钥版本（v0.13 P1-6；trace(key_version=...)
+            或 active 版本）
+        dict_version: 本次 trace 重建 codec 的词典指纹（v0.13 P2-9）
+        dict_version_match: 与传入 dict_version（meta 存档）的比对结果。
+            None=未传存档指纹无从比对；False=词典已变更，带映射失效
+            （本次结果可能漏检/失真，应排查词典版本）
     """
     watermarked: bool
     uid: Optional[int]
@@ -132,6 +147,9 @@ class TraceResult:
     active_bands: int = 0
     attribution_confidence: float = 0.0
     attribution_abstain: bool = False
+    key_version: int = 1
+    dict_version: str = ""
+    dict_version_match: Optional[bool] = None
 
 
 # ----------------------------------------------------------------------
@@ -252,7 +270,6 @@ class Watermarker:
                                        else bytes.fromhex(master_key))
         else:
             self._keystore = KeyStore()  # 随机生成
-        self._master_key = self._keystore.get()
 
         # 注册库（可选）
         self._registry = registry
@@ -288,6 +305,12 @@ class Watermarker:
         if calibration and not calibrate_corpus:
             self._load_calibration(calibration)
 
+    @property
+    def _master_key(self) -> bytes:
+        """当前 active 密钥（v0.13：实时从 keystore 取——rotate 后不留
+        陈旧引用；trace 的旧版本密钥走 _build_codec/master_key 覆盖）。"""
+        return self._keystore.get()
+
     def _fit_null_model(self, corpus: List[str], lang_tag: bytes) -> None:
         """在 null 语料上拟合存在性阈值模型（自适应路径专用，按语言）。
 
@@ -305,13 +328,19 @@ class Watermarker:
           语言_tag 分别拟合（语料只有单一语言时另一语言条目保持空）。
         """
         ratios: List[float] = []
-        for _ in range(5):  # 5 个 salt：σ 覆盖 salt 间方差
+        # 盐采样自适应扩展：稀疏语料（词典命中少）单轮 5 盐可能凑不满
+        # 3 个有效 ratio（每盐期望命中 <1.4 时 P(<3)≈3%，CI/生产偶发
+        # 标定静默失败）。扩展到最多 25 盐，凑满 10 个 ratio 即停。
+        max_salts = 25
+        for _ in range(max_salts):  # 5 个盐起步：σ 覆盖 salt 间方差
             codec = self._build_codec(generate_session_salt(), lang_tag)
             for t in corpus:
                 rep = codec.detect(t, min_n=1)
                 m = sum(1 for st in rep.bands if st.has_signal)
                 if m > 0:
                     ratios.append(rep.existence_score / m)
+            if len(ratios) >= 10 and _ >= 4:
+                break  # 常规语料 5 盐即够，避免多余开销
         if len(ratios) < 3:
             return
         n = len(ratios)
@@ -406,21 +435,30 @@ class Watermarker:
     # codec 构建
     # ------------------------------------------------------------------
 
-    def _build_codec(self, session_salt: bytes, lang_tag: bytes) -> GreenlistCodec:
+    def _build_codec(
+        self,
+        session_salt: bytes,
+        lang_tag: bytes,
+        master_key: Optional[bytes] = None,
+    ) -> GreenlistCodec:
         """按 codec_mode 与语言构建 codec。
 
         default 模式 → 默认词典词林（中/英各自，向后兼容）；
         zero_cost + 中文 → 中文零感词典；zero_cost + 英文 → 英文零感
         词典（拼写变体 + 功能副词）；hybrid → 零感打底 + 补充词典。
+
+        master_key：密钥覆盖（v0.13 P1-6）——trace 旧水印时传
+        keystore.get_version(key_version)，缺省用 active 密钥。
         """
+        key = master_key if master_key is not None else self._master_key
         if self._codec_mode == "default":
-            return GreenlistCodec(self._master_key, session_salt,
+            return GreenlistCodec(key, session_salt,
                                   language_tag=lang_tag)
         if lang_tag == b"zh":
             if self._codec_mode == "zero_cost":
                 from ..greenlist import build_zero_cost_zh_codec
                 codec = build_zero_cost_zh_codec(
-                    self._master_key, session_salt,
+                    key, session_salt,
                     calibrate_corpus=self._calibrate_corpus)
                 return self._apply_p0_vocab(codec, lang_tag)
             # hybrid
@@ -428,7 +466,7 @@ class Watermarker:
                 raise ValueError("hybrid 模式需要 supplementary_dict")
             from ..greenlist import build_hybrid_zh_codec
             codec = build_hybrid_zh_codec(
-                self._master_key, session_salt,
+                key, session_salt,
                 supplementary_dict=self._supplementary_dict,
                 calibrate_corpus=self._calibrate_corpus)
             return self._apply_p0_vocab(codec, lang_tag)
@@ -438,13 +476,13 @@ class Watermarker:
                 raise ValueError("hybrid 模式需要 supplementary_dict")
             from ..greenlist import build_hybrid_en_codec
             codec = build_hybrid_en_codec(
-                self._master_key, session_salt,
+                key, session_salt,
                 supplementary_dict=self._supplementary_dict,
                 calibrate_corpus=self._calibrate_corpus)
             return self._apply_p0_vocab(codec, lang_tag)
         from ..greenlist import build_zero_cost_en_codec
         codec = build_zero_cost_en_codec(
-            self._master_key, session_salt,
+            key, session_salt,
             calibrate_corpus=self._calibrate_corpus)
         return self._apply_p0_vocab(codec, lang_tag)
 
@@ -510,6 +548,7 @@ class Watermarker:
         bias: float = 1.0,
         rng_seed: Optional[int] = None,
         n_bits: Optional[int] = None,
+        uid_redundancy: int = 1,
     ) -> EmbedResult:
         """嵌入水印。
 
@@ -522,6 +561,12 @@ class Watermarker:
             bias: 嵌入强度（1.0=全词参与，<1.0=随机跳过换低偏移）
             rng_seed: 随机种子（None=不固定；指定后同 text+salt+uid+seed 确定性嵌入）
             n_bits: 自适应模式编码位数（None=满容量 k；<k 留冗余带抗替换）
+            uid_redundancy: UID 冗余份数 r（v0.13 P2-8，默认 1=无冗余）。
+                r>1 时同一 UID 位由 r 个交错带共同编码（layout 见
+                EmbedResult.uid_layout），段落删除/裁剪攻击下 UID 归因
+                存活率显著提升（crop50 实测 1-3/5 → 5/5）。代价：UID
+                位空间缩小 r 倍（容量 k → floor(k/r) 位）。与 n_bits
+                同时给出时 n_bits 是冗余后的 UID 位宽（需 k >= n_bits*r）。
 
         自适应模式（zero_cost/hybrid，中英文一致）注意：
             UID 实际编码在 n_bits 位空间——user_id 超出时取低 n_bits 位
@@ -552,6 +597,13 @@ class Watermarker:
         codec = self._build_codec(session_salt, lang_tag)
         adaptive = self._codec_mode != "default"
 
+        # v0.13 P2-8：UID 冗余只在自适应路径实现；default 模式静默
+        # 忽略会让调用方以为有冗余保护——显式拒绝（fail-fast）。
+        if uid_redundancy > 1 and not adaptive:
+            raise ValueError(
+                "uid_redundancy 仅支持 zero_cost/hybrid 模式"
+                "（default 全词林路径无自适应容量，未实现冗余）")
+
         if adaptive:
             # 自检重试（自动盐时换 salt，组颜色+带映射全变）：
             # 1) UID 回验：某词的唯一异色候选可能 boundary unsafe
@@ -564,24 +616,40 @@ class Watermarker:
             # 固定盐时只能换 rng 流（帮助多候选池，单候选无解）。
             # 注意容量随 salt 变化（活动带集不同），每次尝试须重算。
             max_attempts = 4
-            # (honor, uid_ok, margin, marked, bands, report, salt, codec, eff_bits, k)
+            # (honor, uid_ok, margin, marked, bands, report, salt, codec, eff_bits, k, layout)
             # honor = 满足请求的 n_bits（显式请求时要求 k >= n_bits）——
             # 换盐重试会让容量缩水（如 15→11），若直接按满容量钳位会
             # 悄悄吞掉用户要的冗余带。显式 n_bits 下优先选能兑现的盐。
+            # 冗余模式（uid_redundancy>1）下 k_uid = k // r 是 UID 位宽，
+            # n_bits 语义相应变为冗余后的位宽。
+            redundant = uid_redundancy > 1
             best = None
             for attempt in range(max_attempts):
                 k = codec.capacity(text)
-                honor = n_bits is None or k >= n_bits
-                eff_bits = n_bits if (honor and n_bits is not None) else k
-                uid_eff = uid & ((1 << eff_bits) - 1) if eff_bits < 16 else uid
-                marked, bands = codec.embed_adaptive(
-                    text, uid_eff, n_bits=eff_bits, bias=bias, rng=rng)
-                uid_chk, _, report = codec.detect_adaptive(marked, bands, min_n=1)
+                if redundant:
+                    k_uid = k // uid_redundancy
+                    honor = n_bits is None or k_uid >= n_bits
+                    eff_bits = n_bits if (honor and n_bits is not None) else k_uid
+                    uid_eff = uid & ((1 << eff_bits) - 1) if eff_bits < 16 else uid
+                    marked, layout = codec.embed_redundant(
+                        text, uid_eff, r=uid_redundancy, n_bits=eff_bits,
+                        bias=bias, rng=rng)
+                    uid_chk, report = codec.detect_redundant(
+                        marked, layout, min_n=1)
+                    bands = [b for bl in layout for b in bl]
+                else:
+                    honor = n_bits is None or k >= n_bits
+                    eff_bits = n_bits if (honor and n_bits is not None) else k
+                    uid_eff = uid & ((1 << eff_bits) - 1) if eff_bits < 16 else uid
+                    marked, bands = codec.embed_adaptive(
+                        text, uid_eff, n_bits=eff_bits, bias=bias, rng=rng)
+                    uid_chk, _, report = codec.detect_adaptive(marked, bands, min_n=1)
+                    layout = []
                 threshold = self._compute_threshold_adaptive(report, lang_tag)
                 margin = report.existence_score / threshold if threshold > 0 else float("inf")
                 uid_ok = uid_chk == uid_eff
                 cand = (honor, uid_ok, margin, marked, bands, report,
-                        session_salt, codec, eff_bits, k)
+                        session_salt, codec, eff_bits, k, layout)
                 if best is None or (honor, uid_ok, margin) > (best[0], best[1], best[2]):
                     best = cand
                 if honor and uid_ok and margin >= 1.5:
@@ -595,11 +663,12 @@ class Watermarker:
                         rng = random.Random(rng_seed + attempt + 1)
                     else:
                         rng = None
-            _, _, best_margin, marked, bands, report, session_salt, _, eff_bits, k = best
+            (_, _, best_margin, marked, bands, report, session_salt,
+             best_codec, eff_bits, k, layout) = best
         else:
             marked = codec.embed(text, uid, bias=bias, rng=rng)
             report = codec.detect(marked)
-            bands, eff_bits, k = [], 0, 0
+            bands, eff_bits, k, layout = [], 0, 0, []
             best_margin = float("inf")  # default 模式容量不足会硬报错，无弱嵌入概念
 
         # 6. 弱嵌入判定：自适应自检标准是 margin >= 1.5（见上）；换盐/换 rng
@@ -634,6 +703,9 @@ class Watermarker:
             margin_ratio=best_margin if adaptive else 0.0,
             weak_embed=weak_embed,
             reliability=reliability,
+            key_version=self._keystore.active_version,
+            dict_version=codec.dict_version,
+            uid_layout=[list(bl) for bl in layout] if layout else [],
         )
 
     # ------------------------------------------------------------------
@@ -653,6 +725,9 @@ class Watermarker:
         bands: Optional[List[int]] = None,
         n_bits: Optional[int] = None,
         archived_uid: Optional[int] = None,
+        key_version: Optional[int] = None,
+        uid_layout: Optional[List[List[int]]] = None,
+        dict_version: Optional[str] = None,
     ) -> TraceResult:
         """溯源：存在性检测 + UID 解码 + 注册库匹配 + 篡改判定。
 
@@ -689,6 +764,16 @@ class Watermarker:
                 视为失真 → abstain（uid=None，绝不输出可能错误的 UID）。
                 消除防御的路径依赖——此前只有 CLI/find-meta（持 meta
                 路径）做此校验，直接调本 API 的消费者无保护。
+            key_version: 嵌入时的密钥版本（v0.13 P1-6，meta 的
+                key_version 字段）。密钥轮换后旧水印按版本取对应密钥
+                解码——不传则用 active 版本（轮换前嵌入的水印会漏检）。
+            uid_layout: 嵌入时的冗余布局（v0.13 P2-8，meta 的
+                uid_layout 字段）。传入时走冗余解码/软匹配（同一位
+                多带投票）；不传则按 bands 普通自适应路径。
+            dict_version: 嵌入时的词典指纹（v0.13 P2-9，meta 的
+                dict_version 字段）。传入时与本次重建 codec 的指纹
+                比对，结果记录在 TraceResult.dict_version_match
+                （False=词典已变更，带映射失效，本次结果可能漏检）。
 
         Returns:
             TraceResult
@@ -697,11 +782,36 @@ class Watermarker:
         lang_tag = b"zh" if lang == "zh" else b"en"
 
         salt = session_salt or generate_session_salt()
-        codec = self._build_codec(salt, lang_tag)
-        adaptive = bands is not None
+        # v0.13 P1-6：按 key_version 取密钥（轮换后旧水印仍可溯源）
+        if key_version is not None:
+            if key_version not in self._keystore.versions():
+                raise KeyError(
+                    f"密钥版本 {key_version} 不在 keystore "
+                    f"（现有版本：{self._keystore.versions()}）")
+            eff_key = self._keystore.get_version(key_version)
+        else:
+            eff_key = self._master_key
+        used_key_version = (
+            key_version if key_version is not None
+            else self._keystore.active_version)
+        codec = self._build_codec(salt, lang_tag, master_key=eff_key)
+        # v0.13 P2-9：词典指纹比对（meta 存档 vs 本次重建 codec）
+        dict_version_match = (
+            codec.dict_version == dict_version
+            if dict_version is not None else None)
+        adaptive = bands is not None or uid_layout is not None
 
         # 信道 B 检测
-        if adaptive:
+        if uid_layout is not None:
+            # 冗余路径（v0.13 P2-8）：按 layout 聚合多带投票
+            uid_dec, report = codec.detect_redundant(text, uid_layout)
+            active_set = {st.band for st in report.bands if st.has_signal}
+            layout_flat = list(dict.fromkeys(
+                b for bl in uid_layout for b in bl))
+            active = [b for b in layout_flat if b in active_set]
+            capacity = len(bands) if bands is not None else len(layout_flat)
+            eff_bits = n_bits if n_bits is not None else len(uid_layout)
+        elif adaptive:
             uid_dec, active, report = codec.detect_adaptive(text, bands)
             capacity = len(bands)
             eff_bits = n_bits if n_bits is not None else capacity
@@ -755,10 +865,17 @@ class Watermarker:
                     # k-bit 空间：注册库 UID 按低 eff_bits 位映射
                     mask = (1 << eff_bits) - 1
                     k_cands = sorted({u & mask for u in reg_uids})
-                    soft_uid, best_score, soft_gap = codec.soft_match_adaptive(
-                        text, k_cands, bands,
-                        min_n=1, margin=match_margin,
-                        margin_ratio=match_margin_ratio)
+                    if uid_layout is not None:
+                        # 冗余路径（v0.13 P2-8）：按 layout 多带投票打分
+                        soft_uid, best_score, soft_gap = codec.soft_match_redundant(
+                            text, k_cands, uid_layout,
+                            min_n=1, margin=match_margin,
+                            margin_ratio=match_margin_ratio)
+                    else:
+                        soft_uid, best_score, soft_gap = codec.soft_match_adaptive(
+                            text, k_cands, bands,
+                            min_n=1, margin=match_margin,
+                            margin_ratio=match_margin_ratio)
                     if watermarked and soft_uid is not None:
                         uid = soft_uid
                         # k-bit → 注册库 16-bit UID（取低 n_bits 位匹配的注册项）
@@ -831,7 +948,7 @@ class Watermarker:
         tampered = None
         tampered_paras: List[int] = []
         if seal is not None and session_salt is not None:
-            binder = DocumentBinder(self._master_key, session_salt)
+            binder = DocumentBinder(eff_key, session_salt)
             verdict = binder.verify(text, seal)
             tampered = not verdict.ok
             tampered_paras = list(verdict.mismatched_indices)
@@ -856,6 +973,9 @@ class Watermarker:
             active_bands=len(active),
             attribution_confidence=attribution_confidence,
             attribution_abstain=attribution_abstain,
+            key_version=used_key_version,
+            dict_version=codec.dict_version,
+            dict_version_match=dict_version_match,
         )
 
     def _compute_attribution_confidence(
@@ -969,20 +1089,25 @@ class Watermarker:
         text: str,
         *,
         language: Optional[str] = None,
+        session_salt: Optional[bytes] = None,
     ) -> int:
         """嵌入前容量预检：估算文本的有效容量 k（活动带数）。
 
-        不做嵌入，用随机盐构建 codec 估算。容量随盐有小幅波动
-        （活动带集不同），返回单次采样值；k>=10 通常可支撑高可靠
-        溯源，k<6 的事后归因大概率失败（见 EmbedResult.reliability）。
+        不做嵌入，构建 codec 估算。容量随盐有小幅波动（活动带集
+        不同）：默认随机盐返回单次采样值；传 session_salt 可复现
+        embed(text, session_salt=...) 的确切容量（同盐同文本确定性）。
+        k>=10 通常可支撑高可靠溯源，k<6 的事后归因大概率失败
+        （见 EmbedResult.reliability）。
 
         Args:
             text: 待嵌入文本
             language: 语言覆盖（默认自动检测）
+            session_salt: 指定盐（默认随机采样一次）
         """
         lang = self._resolve_language(text, language)
         lang_tag = b"zh" if lang == "zh" else b"en"
-        codec = self._build_codec(generate_session_salt(), lang_tag)
+        codec = self._build_codec(
+            session_salt or generate_session_salt(), lang_tag)
         return codec.capacity(text)
 
     @staticmethod

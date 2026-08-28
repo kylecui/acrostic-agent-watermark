@@ -246,6 +246,19 @@ v0.2 API（`Embedder` / `Decoder`，位置索引锚点）仍可用，供对比�
 
 ## 项目状态
 
+✅ **v0.13 可运维 + 可靠性收尾（397 项测试通过）**：
+- **密钥轮换**：`aawm rotate-key --key key.json` 双钥并行（旧水印按 meta 的 `key_version`
+  仍可溯源），`--drop N` 应急删除泄漏版本
+- **meta 存储**：`embed --meta-store metas.jsonl|metas.db` 自动存档，
+  `find-meta --meta-store` 段落哈希反查（不再需要逐份 meta 文件）
+- **审计**：`--audit-log FILE`（embed/trace/find-meta/serve），append-only JSONL，
+  事件含 `op/source/uid/text_sha256`；`GET /metrics` Prometheus 格式指标端点
+- **CRC-16 默认**：`CAConfig.crc_bits=16`，payload 24→32 bit，翻转检出 1/256→1/65536
+  （**v0.13 前嵌入的文本需显式 `CAConfig(crc_bits=8)` 解码**）
+- **UID 冗余**：`embed(uid_redundancy=r)`（zero_cost/hybrid），段落裁剪 50% 归因不翻转
+- **词典指纹**：`dict_version` 写入 meta，trace 比对嵌入/溯源两侧词典是否一致
+- 详见 [CHANGELOG.md](CHANGELOG.md) 与 [docs/api_reference.md](docs/api_reference.md)
+
 ✅ **v0.10 对抗归因防御（331 项测试通过）**：
 - **归因置信度 `attribution_confidence`**：`判别力 × 容量充分性`，独立于存在性 confidence——对抗场景最危险的失败模式是"高置信度错误归因"（存在性存活但 UID 解错、仍输出错误用户），由新分数显式编码"归因有多大可能对"
 - **abstain 协议**：`attribution_confidence < 0.5` 时 `attribution_abstain=True`，uid/user 置 None、CLI 退出码 3、server 返回"不可判定"——宁可不说也不说错

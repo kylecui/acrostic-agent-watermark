@@ -5,7 +5,7 @@ v0.5: 双信道签名架构 —— 信道 A 段落 Merkle-HMAC 绑定 + 信道 B
 v0.6: 通用 Agent 插件层 —— Facade / 中间件 / 流式 / 框架适配器。
 """
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 from .keys import derive_key, KeyContext, generate_master_key, generate_session_salt
 from .stats import z_test, DetectionResult
@@ -20,6 +20,8 @@ from .coding import (
     build_payload,
     parse_payload,
     crc8,
+    crc16,
+    compute_crc,
     get_code,
     available_codes,
     RepetitionCode,
@@ -71,6 +73,8 @@ __all__ = [
     "build_payload",
     "parse_payload",
     "crc8",
+    "crc16",
+    "compute_crc",
     "get_code",
     "available_codes",
     "RepetitionCode",

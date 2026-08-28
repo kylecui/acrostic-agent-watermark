@@ -10,6 +10,8 @@
     aawm embed --key <file> --user <id> [--registry <file>] [--calibration <file>] <input.txt> [-o marked.txt]
     aawm trace --key <file> [--registry <file>] [--salt <hex>] <suspect.txt>
     aawm find-meta --key <file> <suspect.txt> <meta目录或glob>  查找匹配的 meta
+    aawm rotate-key --key key.json [--drop N]
+                                         密钥轮换（v0.13：双钥并行，旧水印仍可溯源）
     aawm serve --key <file> [--registry <file>] --port 8765
     aawm proxy --key <file> --key-map keys.json [--port 8787]
             [--upstream-openai URL] [--upstream-anthropic URL]
@@ -56,6 +58,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _cmd_find_meta(args)
     elif args.command == "serve":
         return _cmd_serve(args)
+    elif args.command == "rotate-key":
+        return _cmd_rotate_key(args)
     elif args.command == "proxy":
         return _cmd_proxy(args)
     else:
@@ -78,6 +82,49 @@ def _cmd_keygen(args: argparse.Namespace) -> int:
         # 默认输出 hex 到 stdout
         print(ks.get().hex())
     return 0
+
+
+# ----------------------------------------------------------------------
+# rotate-key（v0.13 P1-6）
+# ----------------------------------------------------------------------
+
+def _cmd_rotate_key(args: argparse.Namespace) -> int:
+    """密钥轮换 / 应急清理。
+
+    rotate：追加新版本并切换 active，旧版本保留（双钥并行期）——
+    旧水印 meta 记录的 key_version 仍可按版本取钥溯源。
+    --drop N：确认某版本泄漏后的应急删除（不允许删 active）。
+    """
+    if not Path(args.key).exists():
+        print(f"错误: 密钥文件不存在: {args.key}", file=sys.stderr)
+        return 1
+    ks = KeyStore.from_file(args.key)
+    old_active = ks.active_version
+    if args.drop is not None:
+        try:
+            ks.drop_version(args.drop)
+        except (ValueError, KeyError) as e:
+            print(f"错误: {e}", file=sys.stderr)
+            return 1
+        ks.save(args.key)
+        print(f"已删除密钥版本 {args.drop}——该版本嵌入的水印将永久无法溯源")
+    else:
+        new_v = ks.rotate()
+        ks.save(args.key)
+        print(f"密钥已轮换: 版本 {old_active} → {new_v}（active）")
+        print(f"旧版本 {old_active} 保留（双钥并行期），旧水印仍可溯源；"
+              f"确认泄漏后可 --drop {old_active} 应急删除")
+    print(f"现有版本: {ks.versions()}（active={ks.active_version}）")
+    return 0
+
+
+def _audit(args: argparse.Namespace, event: dict) -> None:
+    """--audit-log 给定时写一条审计事件（v0.13 P1-5，append-only JSONL）。"""
+    path = getattr(args, "audit_log", None)
+    if not path:
+        return
+    from .audit import AuditLogger
+    AuditLogger(path).log(event)
 
 
 # ----------------------------------------------------------------------
@@ -204,9 +251,10 @@ def _cmd_embed(args: argparse.Namespace) -> int:
     # 解析 user_id
     user_id = _parse_user_id(args.user)
 
-    # 嵌入
+    # 嵌入（v0.13 P2-8：--uid-redundancy>1 走冗余编码）
     result = wm.embed(text, user_id=user_id, sign=not args.no_sign,
-                      n_bits=args.n_bits)
+                      n_bits=args.n_bits,
+                      uid_redundancy=args.uid_redundancy)
 
     # 输出
     if args.output:
@@ -226,6 +274,10 @@ def _cmd_embed(args: argparse.Namespace) -> int:
             "margin_ratio": result.margin_ratio,
             "weak_embed": result.weak_embed,
             "reliability": result.reliability,
+            # v0.13 P1-6/P2-9/P2-8：密钥版本 + 词典指纹 + 冗余布局
+            "key_version": result.key_version,
+            "dict_version": result.dict_version,
+            "uid_layout": result.uid_layout,
         }
         if result.seal:
             meta["seal"] = {
@@ -237,8 +289,29 @@ def _cmd_embed(args: argparse.Namespace) -> int:
         meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"水印文本已保存到 {args.output}")
         print(f"元数据（salt+seal+bands）已保存到 {meta_file}")
+
+        # v0.13 P1-7：meta 后端存储（--meta-store，段哈希可反查）
+        if args.meta_store:
+            from .meta_store import open_meta_store
+            meta["watermarked_text"] = result.watermarked_text
+            rid = open_meta_store(args.meta_store).put(meta)
+            print(f"meta 已存档到 {args.meta_store}（记录 ID={rid}）")
     else:
         print(result.watermarked_text)
+
+    from .audit import text_fingerprint
+    _audit(args, {
+        "op": "embed", "source": "cli",
+        "text_sha256": text_fingerprint(result.watermarked_text),
+        "uid": result.user_id,
+        "user": result.user_alias,
+        "reliability": result.reliability,
+        "weak_embed": result.weak_embed,
+        "capacity": result.capacity,
+        "n_bits": result.n_bits,
+        "key_version": result.key_version,
+        "uid_redundancy": args.uid_redundancy,
+    })
 
     print(f"\n[统计] UID=0x{result.user_id:04X}, 词典命中={result.n_dict_words}, "
           f"存在性={result.existence_score:.1f}", file=sys.stderr)
@@ -289,6 +362,9 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     bands = None
     n_bits = None
     archived_uid = None  # 盐外证据：meta 存档 UID（嵌入时真值，解码交叉校验用）
+    key_version = None   # v0.13 P1-6：嵌入时的密钥版本（轮换后旧水印按版本取钥）
+    uid_layout = None    # v0.13 P2-8：冗余布局
+    dict_version = None  # v0.13 P2-9：嵌入时的词典指纹
     if args.salt:
         session_salt = bytes.fromhex(args.salt)
     if args.meta:
@@ -302,6 +378,14 @@ def _cmd_trace(args: argparse.Namespace) -> int:
             archived_uid = int(_au) if _au is not None else None
         except (TypeError, ValueError):
             archived_uid = None
+        # v0.13：密钥版本 / 冗余布局 / 词典指纹（旧 meta 缺省 = 旧语义）
+        _kv = m["raw"].get("key_version")
+        key_version = int(_kv) if _kv is not None else None
+        _ul = m["raw"].get("uid_layout")
+        if isinstance(_ul, list) and _ul and isinstance(_ul[0], list):
+            uid_layout = [[int(b) for b in bl] for bl in _ul]
+        _dv = m["raw"].get("dict_version")
+        dict_version = str(_dv) if _dv else None
         # 未显式指定 codec-mode 时优先采用 meta 记录的模式（嵌入时的
         # 真实模式），避免 CLI 默认值覆盖导致码本不一致漏检
         meta_codec = m["raw"].get("codec_mode")
@@ -319,7 +403,15 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     if ratio is not None:
         trace_kwargs["match_margin_ratio"] = ratio  # 未显式给则用 trace 默认 0.3
     trace = wm.trace(text, session_salt=session_salt, seal=seal,
-                     bands=bands, n_bits=n_bits, **trace_kwargs)
+                     bands=bands, n_bits=n_bits,
+                     key_version=key_version, uid_layout=uid_layout,
+                     dict_version=dict_version, **trace_kwargs)
+
+    # v0.13 P2-9：词典指纹 mismatch 告警（带映射已失效，结果可能漏检）
+    if trace.dict_version_match is False:
+        print("警告: 词典版本不匹配（meta 存档指纹 ≠ 当前词典）——嵌入后"
+              "词典/supplementary_dict 已变更，本次结果可能漏检或失真",
+              file=sys.stderr)
 
     # 盐外证据（v0.10）：meta 存档 UID 与解码 UID 交叉校验。攻击下存在性
     # 常存活但 UID 解码失真（"自信地错"），存档 UID 是嵌入时的真值——
@@ -351,12 +443,29 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     print(f"归因置信度: {trace.attribution_confidence:.2f}")
     print(f"存在性得分: {trace.existence_score:.1f}")
     print(f"词典命中: {trace.n_dict_words}")
+    if trace.key_version != 1:
+        print(f"密钥版本: {trace.key_version}")
     if bands:
         print(f"自适应: 容量={trace.capacity} bit, 存活带={trace.active_bands}/{len(bands)}")
+    if uid_layout:
+        print(f"冗余布局: {len(uid_layout)} bit × {len(uid_layout[0])} 份, "
+              f"存活带={trace.active_bands}")
     if trace.tampered is not None:
         print(f"篡改判定: {'是' if trace.tampered else '否'}")
         if trace.tampered_paragraphs:
             print(f"被改段落: {trace.tampered_paragraphs}")
+    from .audit import text_fingerprint
+    _audit(args, {
+        "op": "trace", "source": "cli",
+        "text_sha256": text_fingerprint(text),
+        "watermarked": trace.watermarked,
+        "uid": trace.uid,
+        "user": trace.user,
+        "attribution_confidence": round(trace.attribution_confidence, 4),
+        "attribution_abstain": trace.attribution_abstain,
+        "key_version": trace.key_version,
+        "dict_version_match": trace.dict_version_match,
+    })
     if not trace.watermarked:
         return 2
     if trace.attribution_abstain:
@@ -507,6 +616,14 @@ def _adjudicate_find_meta(ranked, detections):
             "多个候选检出且无段哈希内容证据——无法区分真伪，不可判定")
 
 
+def _meta_uid_layout(raw: dict):
+    """meta 原始字典中的 uid_layout（list[list[int]]，缺省 None）。"""
+    ul = raw.get("uid_layout")
+    if isinstance(ul, list) and ul and isinstance(ul[0], list):
+        return [[int(b) for b in bl] for bl in ul]
+    return None
+
+
 def _cmd_find_meta(args: argparse.Namespace) -> int:
     """为嫌疑文本在存档 meta 中找出匹配的一份。
 
@@ -534,11 +651,34 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
     text_hashes = {hashlib.sha256(p.encode("utf-8")).digest() for p in paras}
 
     candidates = _resolve_meta_candidates(args.metas)
-    if not candidates:
+
+    # v0.13 P1-7：--meta-store 段落哈希反查（嫌疑文本逐段哈希查索引，
+    # 免密钥定位候选 meta——文本被删减/裁剪后未改段落仍命中）
+    store_records = []
+    if getattr(args, "meta_store", None):
+        from .meta_store import open_meta_store
+        store = open_meta_store(args.meta_store)
+        seen_ids = set()
+        for h in text_hashes:
+            for rec in store.find_by_para_hash(h.hex()):
+                rid = rec.get("id")
+                if rid in seen_ids:
+                    continue
+                seen_ids.add(rid)
+                store_records.append(
+                    (f"store#{rid}@{args.meta_store}", _meta_from_raw(rec)))
+        store.close()
+        print(f"[meta-store] 段落反查命中 {len(store_records)} 条候选"
+              f"（{args.meta_store}）")
+
+    if not candidates and not store_records:
         print("未找到候选 meta 文件", file=sys.stderr)
         return 1
 
     ranked = []  # (overlap, n_archived, label, meta)
+    for label, m in store_records:
+        phs = set(m["seal"].para_hashes) if m["seal"] else set()
+        ranked.append((len(text_hashes & phs), len(phs), label, m))
     for label, m in _iter_candidate_records(candidates):
         phs = set(m["seal"].para_hashes) if m["seal"] else set()
         ranked.append((len(text_hashes & phs), len(phs), label, m))
@@ -591,9 +731,16 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
         ratio = getattr(args, "match_margin_ratio", None)
         if ratio is not None:
             trace_kw["match_margin_ratio"] = ratio  # 未显式给则用 trace 默认 0.3
+        raw = m["raw"]
+        _kv = raw.get("key_version")
+        _dv = raw.get("dict_version")
         t = wm_for(m).trace(
             text, session_salt=m["salt"], seal=m["seal"],
-            bands=m["bands"], n_bits=m["n_bits"], **trace_kw)
+            bands=m["bands"], n_bits=m["n_bits"],
+            key_version=int(_kv) if _kv is not None else None,
+            uid_layout=_meta_uid_layout(raw),
+            dict_version=str(_dv) if _dv else None,
+            **trace_kw)
         archived_uid = m["raw"].get("user_id", m["raw"].get("uid"))
         status = "检出" if t.watermarked else "未检出"
         detail = ""
@@ -651,12 +798,19 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     reg = UIDRegistry(backend="file", path=args.registry) if args.registry else None
     wm = _make_watermarker(args, ks, reg)
 
+    # v0.13 P1-5：审计日志（trace/embed/find-meta 全留痕，JSONL append-only）
+    if getattr(args, "audit_log", None):
+        from .audit import AuditLogger, set_audit_logger
+        set_audit_logger(AuditLogger(args.audit_log))
+        print(f"审计日志: {args.audit_log}")
+
     # 把 watermarker 注入 server 模块
     from .server.api import create_app, set_watermarker
     set_watermarker(wm)
     app = create_app()
 
     print(f"AAWM 检测服务启动于 http://0.0.0.0:{args.port}")
+    print(f"指标端点: http://0.0.0.0:{args.port}/metrics（Prometheus 格式）")
     uvicorn.run(app, host="0.0.0.0", port=args.port, log_level=args.log_level)
     return 0
 
@@ -827,6 +981,19 @@ def _make_parser() -> argparse.ArgumentParser:
     p_embed.add_argument("--n-bits", dest="n_bits", type=int, default=None,
                          help="自适应模式编码位数（默认满容量；"
                               "小于容量时留冗余带抗替换攻击）")
+    p_embed.add_argument("--uid-redundancy", dest="uid_redundancy", type=int,
+                         default=1, metavar="R",
+                         help="UID 冗余份数（v0.13，默认 1=无冗余）。R>1 时同一位"
+                              "由 R 个交错带共同编码，段落删除/裁剪攻击下归因"
+                              "存活率显著提升；代价是 UID 位空间缩小 R 倍")
+    p_embed.add_argument("--meta-store", dest="meta_store", default=None,
+                         metavar="PATH",
+                         help="meta 后端存储（v0.13：.db/.sqlite → SQLite，其余 → "
+                              "JSONL）。嵌入后自动存档，find-meta --meta-store "
+                              "可段落哈希反查")
+    p_embed.add_argument("--audit-log", dest="audit_log", default=None,
+                         metavar="PATH",
+                         help="审计日志 JSONL（v0.13：嵌入事件留痕，不落原文）")
     _add_codec_options(p_embed)
 
     # trace
@@ -843,14 +1010,18 @@ def _make_parser() -> argparse.ArgumentParser:
     p_trace.add_argument("--match-margin-ratio", dest="match_margin_ratio",
                          type=float, default=None, metavar="R",
                          help="软判决自适应置信系数（默认 0.3；None=纯绝对 margin）")
+    p_trace.add_argument("--audit-log", dest="audit_log", default=None,
+                         metavar="PATH",
+                         help="审计日志 JSONL（v0.13：溯源事件留痕，不落原文）")
     _add_codec_options(p_trace)
 
     # find-meta
     p_find = sub.add_parser(
         "find-meta", help="为嫌疑文本在存档 meta 中查找匹配的一份")
     p_find.add_argument("input", help="输入文件路径（- 表示 stdin）")
-    p_find.add_argument("metas", nargs="+",
-                        help="候选 meta：文件路径 / 目录（递归 *.meta.json 与 *.jsonl salt-archive）/ glob 模式")
+    p_find.add_argument("metas", nargs="*",
+                        help="候选 meta：文件路径 / 目录（递归 *.meta.json 与 *.jsonl salt-archive）/ glob 模式"
+                             "（给了 --meta-store 时可省略）")
     p_find.add_argument("--key", help="密钥文件路径（用于信道 B 验证）")
     p_find.add_argument("--key-hex", dest="key_hex", help="密钥 hex")
     p_find.add_argument("--registry", help="注册库文件路径")
@@ -864,6 +1035,13 @@ def _make_parser() -> argparse.ArgumentParser:
     p_find.add_argument("--match-margin-ratio", dest="match_margin_ratio",
                         type=float, default=None, metavar="R",
                         help="软判决自适应置信系数（默认 0.3；None=纯绝对 margin）")
+    p_find.add_argument("--meta-store", dest="meta_store", default=None,
+                        metavar="PATH",
+                        help="meta 后端存储（v0.13）：嫌疑文本逐段哈希反查索引，"
+                             "免密钥定位候选（--key 仍用于信道 B 验证）")
+    p_find.add_argument("--audit-log", dest="audit_log", default=None,
+                        metavar="PATH",
+                        help="审计日志 JSONL（v0.13：溯源事件留痕，不落原文）")
     _add_codec_options(p_find)
 
     # serve
@@ -873,7 +1051,19 @@ def _make_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--registry", help="注册库文件路径")
     p_serve.add_argument("--port", type=int, default=8765, help="监听端口")
     p_serve.add_argument("--log-level", default="info", help="日志级别")
+    p_serve.add_argument("--audit-log", dest="audit_log", default=None,
+                         metavar="PATH",
+                         help="审计日志 JSONL（v0.13：trace/embed/find-meta "
+                              "全事件留痕，不落原文）")
     _add_codec_options(p_serve)
+
+    # rotate-key（v0.13 P1-6）
+    p_rot = sub.add_parser(
+        "rotate-key", help="密钥轮换（双钥并行，旧水印仍可溯源）")
+    p_rot.add_argument("--key", required=True, help="密钥文件路径")
+    p_rot.add_argument("--drop", type=int, default=None, metavar="N",
+                       help="应急清理：删除版本 N（确认泄漏后用；"
+                            "该版本嵌入的水印将永久无法溯源）")
 
     # proxy
     p_proxy = sub.add_parser("proxy", help="启动 CLI/IDE agent 代理网关")
