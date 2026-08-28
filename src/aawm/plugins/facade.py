@@ -49,6 +49,11 @@ class EmbedResult:
         bands: 自适应编码使用的带列表（自适应检测需要，需存档）
         capacity: 文档有效容量 k（活动带数）
         n_bits: 实际编码位数（含冗余时 < capacity）
+        margin_ratio: 自检存在性余量 = existence_score / 阈值（自适应模式；
+            default 模式=0）。<1.5 表示信号贴近阈值，检出可靠性低。
+        weak_embed: 弱嵌入标志（自适应模式）。自检未达 1.5×阈值标准时置
+            True——embed 已尽力（换盐/换 rng 4 次），但文本信号不足，
+            事后 trace 可能漏检或归因 abstain，调用方应据此警告用户。
     """
     watermarked_text: str
     session_salt: bytes
@@ -62,6 +67,8 @@ class EmbedResult:
     bands: List[int] = field(default_factory=list)
     capacity: int = 0
     n_bits: int = 0
+    margin_ratio: float = 0.0
+    weak_embed: bool = False
 
 
 @dataclass
@@ -461,11 +468,16 @@ class Watermarker:
                         rng = random.Random(rng_seed + attempt + 1)
                     else:
                         rng = None
-            _, _, _, marked, bands, report, session_salt, _, eff_bits, k = best
+            _, _, best_margin, marked, bands, report, session_salt, _, eff_bits, k = best
         else:
             marked = codec.embed(text, uid, bias=bias, rng=rng)
             report = codec.detect(marked)
             bands, eff_bits, k = [], 0, 0
+            best_margin = float("inf")  # default 模式容量不足会硬报错，无弱嵌入概念
+
+        # 6. 弱嵌入判定：自适应自检标准是 margin >= 1.5（见上）；换盐/换 rng
+        #    max_attempts 次仍不达标时静默返回余量最大的一次——这里显式暴露。
+        weak_embed = adaptive and best_margin < 1.5
 
         # 5. 信道 A 签名（可选）
         seal = None
@@ -486,6 +498,8 @@ class Watermarker:
             bands=list(bands),
             capacity=k,
             n_bits=eff_bits,
+            margin_ratio=best_margin if adaptive else 0.0,
+            weak_embed=weak_embed,
         )
 
     # ------------------------------------------------------------------

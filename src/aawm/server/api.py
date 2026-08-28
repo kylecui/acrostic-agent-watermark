@@ -49,6 +49,7 @@ class TraceRequest(BaseModel):
     # 自适应路径元数据（embed 返回，需存档回传）
     bands: Optional[List[int]] = None
     n_bits: Optional[int] = None
+    archived_uid: Optional[int] = None  # 盐外证据：嵌入时存档 UID（解码交叉校验用）
 
 
 class TraceResponse(BaseModel):
@@ -94,6 +95,9 @@ class EmbedResponse(BaseModel):
     bands: List[int] = []
     capacity: int = 0
     n_bits: int = 0
+    # v0.10 弱嵌入警示：自检余量 <1.5 时 weak_embed=True（trace 可能漏检）
+    margin_ratio: float = 0.0
+    weak_embed: bool = False
 
 
 class FindMetaCandidate(BaseModel):
@@ -104,6 +108,7 @@ class FindMetaCandidate(BaseModel):
     codec_mode: Optional[str] = None
     seal: Optional[dict] = None
     label: Optional[str] = None  # 调用方标记（如文件名/行号）
+    archived_uid: Optional[int] = None  # 盐外证据：嵌入时的存档 UID（解码交叉校验用）
 
 
 class FindMetaRequest(BaseModel):
@@ -174,6 +179,18 @@ def create_app():
             n_bits=req.n_bits,
         )
 
+        # 盐外证据（v0.10）：存档 UID 与解码 UID 交叉校验。攻击下存在性
+        # 常存活但 UID 解码失真（"自信地错"），存档 UID 是嵌入时真值——
+        # 不一致即 abstain（uid/user 置空），绝不输出可能错误的 UID。
+        if req.archived_uid is not None:
+            from dataclasses import replace
+            from ..cli import _uid_alias_match
+            if (result.watermarked and not result.attribution_abstain
+                    and not _uid_alias_match(result, req.archived_uid)):
+                result = replace(
+                    result, uid=None, user=None, hamming_dist=-1,
+                    attribution_abstain=True, attribution_confidence=0.0)
+
         return TraceResponse(
             watermarked=result.watermarked,
             uid=result.uid,
@@ -220,6 +237,8 @@ def create_app():
             bands=result.bands,
             capacity=result.capacity,
             n_bits=result.n_bits,
+            margin_ratio=result.margin_ratio,
+            weak_embed=result.weak_embed,
         )
 
     @app.post("/v1/find-meta", response_model=FindMetaResponse)
@@ -248,9 +267,11 @@ def create_app():
             ranked.append((len(text_hashes & phs), i, cand))
         ranked.sort(key=lambda r: -r[0])
 
-        # 信道 B：优先验证段哈希命中的候选
+        # 信道 B：优先验证段哈希命中的候选；收集全部检出再裁决
+        # （不"只取第一个检出"——攻击下存在性盐无关，错误盐也会"检出"，
+        #  必须用段哈希证据 + 存档 UID 交叉校验后才可归因）
         to_try = [r for r in ranked if r[0] > 0] or ranked
-        found = None
+        detections = []  # (overlap, index, t, archived_uid)
         for k, (overlap, i, cand) in enumerate(to_try):
             if k >= req.max_trace:
                 break
@@ -272,10 +293,22 @@ def create_app():
                 n_bits=cand.n_bits,
             )
             if t.watermarked:
-                found = (i, cand, t)
-                break
+                detections.append((overlap, i, t, cand.archived_uid))
 
-        if found is None:
+        # 最终裁决（与 CLI aawm find-meta 同规则）：段哈希内容证据优先 +
+        # 解码 UID 与存档交叉校验；不确定即 abstain，不输出可能错误的 UID。
+        from ..cli import _adjudicate_find_meta
+        kind, label, t, reason = _adjudicate_find_meta(
+            [(ov, 0, i, cand) for ov, i, cand in ranked],
+            detections)
+
+        def _find_cand(idx):
+            return next((c for ov, i, c in ranked if i == idx), None)
+
+        def _overlap(idx):
+            return next((ov for ov, i, c in ranked if i == idx), 0)
+
+        if kind == "none":
             best_overlap, best_i, best_cand = ranked[0] if ranked else (0, None, None)
             return FindMetaResponse(
                 watermarked=False,
@@ -284,27 +317,41 @@ def create_app():
                 para_overlap=best_overlap,
                 para_total=len(paras),
             )
+        if kind == "abstain":
+            cand = _find_cand(label) if label is not None else None
+            return FindMetaResponse(
+                watermarked=bool(t and t.watermarked),
+                matched_index=label,
+                matched_label=cand.label if cand else None,
+                uid=None,
+                user=None,
+                hamming_dist=t.hamming_dist if t else -1,
+                confidence=t.confidence if t else 0.0,
+                existence_score=t.existence_score if t else 0.0,
+                tampered=t.tampered if t else None,
+                tampered_paragraphs=list(t.tampered_paragraphs) if t else [],
+                para_overlap=_overlap(label) if label is not None else 0,
+                para_total=len(paras),
+                attribution_confidence=t.attribution_confidence if t else 0.0,
+                attribution_abstain=True,
+            )
 
-        i, cand, t = found
-        # 归因置信不足（abstain）：输出"不可判定"而非可能错误的 UID/用户。
-        # 这是对抗场景"高置信度错误归因"的产品级修复（VERIFICATION_REPORT）。
-        uid = t.uid if not t.attribution_abstain else None
-        user = t.user if not t.attribution_abstain else None
+        cand = _find_cand(label)
         return FindMetaResponse(
             watermarked=True,
-            matched_index=i,
-            matched_label=cand.label,
-            uid=uid,
-            user=user,
+            matched_index=label,
+            matched_label=cand.label if cand else None,
+            uid=t.uid,
+            user=t.user,
             hamming_dist=t.hamming_dist,
             confidence=t.confidence,
             existence_score=t.existence_score,
             tampered=t.tampered,
             tampered_paragraphs=t.tampered_paragraphs,
-            para_overlap=max(r[0] for r in ranked if r[1] == i),
+            para_overlap=_overlap(label),
             para_total=len(paras),
             attribution_confidence=t.attribution_confidence,
-            attribution_abstain=t.attribution_abstain,
+            attribution_abstain=False,
         )
 
     return app

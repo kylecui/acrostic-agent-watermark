@@ -20,6 +20,7 @@ import glob
 import hashlib
 import json
 import sys
+from dataclasses import replace
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -148,6 +149,8 @@ def _cmd_embed(args: argparse.Namespace) -> int:
             "bands": result.bands,
             "capacity": result.capacity,
             "n_bits": result.n_bits,
+            "margin_ratio": result.margin_ratio,
+            "weak_embed": result.weak_embed,
         }
         if result.seal:
             meta["seal"] = {
@@ -167,6 +170,12 @@ def _cmd_embed(args: argparse.Namespace) -> int:
     if result.codec_mode != "default":
         print(f"[自适应] 模式={result.codec_mode}, 容量={result.capacity} bit, "
               f"编码={result.n_bits} bit, bands={result.bands}", file=sys.stderr)
+    if result.weak_embed:
+        print(f"[警告] 弱嵌入：自检余量={result.margin_ratio:.2f} < 1.5，"
+              f"文本信号不足，事后 trace 可能漏检或归因 abstain。"
+              f"建议加长文本（中文 ≥1200 字 / 英文词典密集 ≥600 词）或",
+              file=sys.stderr)
+        print(f"       改用词典命中更高的文本。", file=sys.stderr)
     return 0
 
 
@@ -190,6 +199,7 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     seal = None
     bands = None
     n_bits = None
+    archived_uid = None  # 盐外证据：meta 存档 UID（嵌入时真值，解码交叉校验用）
     if args.salt:
         session_salt = bytes.fromhex(args.salt)
     if args.meta:
@@ -198,6 +208,11 @@ def _cmd_trace(args: argparse.Namespace) -> int:
         seal = m["seal"]
         bands = m["bands"]
         n_bits = m["n_bits"]
+        _au = m["raw"].get("user_id", m["raw"].get("uid"))
+        try:
+            archived_uid = int(_au) if _au is not None else None
+        except (TypeError, ValueError):
+            archived_uid = None
         # 未显式指定 codec-mode 时优先采用 meta 记录的模式（嵌入时的
         # 真实模式），避免 CLI 默认值覆盖导致码本不一致漏检
         meta_codec = m["raw"].get("codec_mode")
@@ -217,11 +232,26 @@ def _cmd_trace(args: argparse.Namespace) -> int:
     trace = wm.trace(text, session_salt=session_salt, seal=seal,
                      bands=bands, n_bits=n_bits, **trace_kwargs)
 
+    # 盐外证据（v0.10）：meta 存档 UID 与解码 UID 交叉校验。攻击下存在性
+    # 常存活但 UID 解码失真（"自信地错"），存档 UID 是嵌入时的真值——
+    # 不一致即视为失真，宁可 abstain 也不输出可能错误的 UID。
+    uid_distorted = (
+        trace.watermarked and not trace.attribution_abstain
+        and archived_uid is not None and not _uid_alias_match(trace, archived_uid))
+    if uid_distorted:
+        trace = replace(
+            trace, uid=None, user=None, hamming_dist=-1,
+            attribution_abstain=True, attribution_confidence=0.0)
+
     # 输出
     print(f"检出水印: {'是' if trace.watermarked else '否'}")
     if trace.attribution_abstain:
-        print("归因: ⚠ 检出水印但归因置信不足（abstain）——"
-              "不输出 UID/用户，避免错误归因")
+        if uid_distorted:
+            print(f"归因: ⚠ 检出水印但 UID 解码失真（解码值 ≠ meta 存档 "
+                  f"UID=0x{archived_uid:04X}）——不可判定用户，避免错误归因")
+        else:
+            print("归因: ⚠ 检出水印但归因置信不足（abstain）——"
+                  "不输出 UID/用户，避免错误归因")
     if trace.uid is not None:
         print(f"解码 UID: 0x{trace.uid:04X}")
     if trace.user:
@@ -312,6 +342,82 @@ def _iter_candidate_records(paths: List[Path]):
             print(f"跳过无法读取的 meta: {p} ({e})", file=sys.stderr)
 
 
+def _uid_alias_match(t, archived_uid) -> bool:
+    """解码 UID 与 meta 存档 UID 是否一致（盐外证据，含自适应 k-bit 掩码对齐）。
+
+    攻击下存在性常存活但 UID 解码失真（"自信地错"），meta 里存的
+    user_id/uid 是嵌入时的真值——解码值与之不一致即视为失真。
+    """
+    if archived_uid is None or t.uid is None:
+        return False
+    try:
+        auid = int(archived_uid)
+    except (TypeError, ValueError):
+        return False
+    if t.uid == auid:
+        return True
+    mask = (1 << t.n_bits) - 1 if t.n_bits else None
+    return bool(mask and t.uid == (auid & mask))
+
+
+def _adjudicate_find_meta(ranked, detections):
+    """find-meta 最终裁决。
+
+    证据优先级：
+    1. 段哈希内容证据（overlap>0）优先——嫌疑文本包含该 meta 的未改
+       段落，是免密钥、内容寻址的最强来源锁定。即使其信道 B 未检出/
+       UID 失真，也宁可 abstain，绝不改判到无内容证据却"检出"的 meta。
+    2. 解码 UID 必须与 meta 存档 UID 一致（盐外证据）：不一致即 abstain，
+       绝不输出可能错误的 UID/用户。
+    3. 无段哈希命中时，多候选检出冲突 → abstain（错误盐巧合检出风险）。
+
+    Args:
+        ranked: [(overlap, n_archived, label, meta)] 按 overlap 降序
+        detections: [(overlap, label, TraceResult, archived_uid)] 检出的候选
+
+    Returns:
+        (kind, label, trace, reason)：kind ∈ {"match", "abstain", "none"}
+    """
+    by_label = {label: (ov, t, auid) for ov, label, t, auid in detections}
+    hash_hits = [r for r in ranked if r[0] > 0]
+
+    if hash_hits:
+        ov0, _, label0, _ = hash_hits[0]  # ranked 已按 overlap 降序
+        hit = by_label.get(label0)
+        if hit is None:
+            return ("abstain", label0, None,
+                    f"内容命中（段哈希 {ov0} 段）但水印未检出（重度改写）")
+        _, t0, auid0 = hit
+        if not t0.watermarked:
+            return ("abstain", label0, t0,
+                    f"内容命中（段哈希 {ov0} 段）但水印未检出——重度改写")
+        if t0.attribution_abstain:
+            return ("abstain", label0, t0, "检出水印但归因置信不足（abstain）")
+        if auid0 is not None and not _uid_alias_match(t0, auid0):
+            return ("abstain", label0, t0,
+                    f"检出水印但 UID 解码失真（解码 0x{t0.uid:04X}"
+                    f" ≠ 存档 0x{int(auid0):04X}）")
+        return ("match", label0, t0, "ok")
+
+    # 无段哈希命中（无 seal 或整段改写），纯信道 B
+    if not detections:
+        return ("none", None, None, "")
+    if len(detections) == 1:
+        _, label0, t0, auid0 = detections[0]
+        if t0.attribution_abstain:
+            return ("abstain", label0, t0, "检出水印但归因置信不足（abstain）")
+        if auid0 is not None and not _uid_alias_match(t0, auid0):
+            return ("abstain", label0, t0,
+                    f"检出水印但 UID 解码失真（解码 0x{t0.uid:04X}"
+                    f" ≠ 存档 0x{int(auid0):04X}）")
+        return ("match", label0, t0, "ok")
+    # 多候选检出且无段哈希内容证据：存在性统计量盐无关（VERIFICATION_REPORT
+    # §4.3：同一文本 50 条盐 24–50 条"检出"），多个"检出"无法区分真伪——
+    # 即使某检出的解码 UID 与存档一致也可能是错误盐巧合。保守 abstain。
+    return ("abstain", None, None,
+            "多个候选检出且无段哈希内容证据——无法区分真伪，不可判定")
+
+
 def _cmd_find_meta(args: argparse.Namespace) -> int:
     """为嫌疑文本在存档 meta 中找出匹配的一份。
 
@@ -321,9 +427,17 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
     两级策略：
     1. 段落哈希匹配（免密钥）：seal.para_hashes 存的是段落规范化文本
        的纯 SHA256（非密钥化），嫌疑文本逐段哈希求交集即可定位——
-       即使文本被部分改写，未改段落仍匹配。
+       即使文本被部分改写，未改段落仍匹配。段哈希命中是内容寻址的
+       最强来源证据，裁决时优先于信道 B 的"检出"。
     2. 信道 B 回退（需 key）：对候选逐个用其 salt+bands 跑 trace，
        以检出与否裁决（无 seal 的 meta 只能走这条路）。
+    最终裁决（_adjudicate_find_meta）：
+    - 段哈希锁定为主候选，即使其 trace 未检出/失真也宁可 abstain，
+      绝不改判到无内容证据却"检出"的错误 meta 上（报告 §8.2 错误
+      结论即源于此：攻击下存在性常存活但 UID 解码失真）。
+    - 解码 UID 必须与 meta 存档 UID 一致（盐外证据），不一致即 abstain，
+      不输出可能错误的 UID/用户。
+    - 无段哈希且多候选检出冲突 → abstain（错误盐巧合检出风险）。
     """
     text = _read_input(args.input)
     from aawm.binding import split_paragraphs
@@ -380,7 +494,7 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
 
     to_try = [r for r in ranked if r[0] > 0] or ranked
     print(f"\n[信道 B 验证]（用各 meta 的 salt+bands 解码，最多试 {args.max_trace} 份）")
-    found = None
+    detections = []  # (overlap, label, TraceResult, archived_uid)
     for i, (overlap, _, label, m) in enumerate(to_try):
         if i >= args.max_trace:
             break
@@ -391,35 +505,44 @@ def _cmd_find_meta(args: argparse.Namespace) -> int:
         t = wm_for(m).trace(
             text, session_salt=m["salt"], seal=m["seal"],
             bands=m["bands"], n_bits=m["n_bits"], **trace_kw)
+        archived_uid = m["raw"].get("user_id", m["raw"].get("uid"))
         status = "检出" if t.watermarked else "未检出"
         detail = ""
         if t.watermarked:
             if t.attribution_abstain:
                 detail = " ⚠归因置信不足(abstain)"
+            elif archived_uid is not None and not _uid_alias_match(t, archived_uid):
+                detail = (f" ⚠UID 失真(解码 0x{t.uid:04X}"
+                          f" ≠ 存档 0x{int(archived_uid):04X})")
             else:
                 detail = f" UID=0x{t.uid:04X}"
                 if t.user:
                     detail += f" 匹配 {t.user} (汉明距={t.hamming_dist})"
-            found = found or (label, m, t)
+            detections.append((overlap, label, t, archived_uid))
         print(f"  {label}: {status}（存在性={t.existence_score:.1f}"
               f" 置信度={t.confidence:.2f} 归因={t.attribution_confidence:.2f}）{detail}")
 
-    if found:
-        label, m, t = found
+    kind, label, t, reason = _adjudicate_find_meta(ranked, detections)
+    if kind == "match" and t is not None:
         print(f"\n结论: 匹配 meta = {label}")
-        if t.attribution_abstain:
-            print("  归因: ⚠ 检出水印但归因置信不足（abstain），"
-                  "不可判定用户——避免输出可能错误的 UID/用户")
-        else:
-            print(f"  UID=0x{t.uid:04X}, 用户={t.user or '未匹配'}, "
-                  f"汉明距={t.hamming_dist}, 置信度={t.confidence:.2f}")
+        print(f"  UID=0x{t.uid:04X}, 用户={t.user or '未匹配'}, "
+              f"汉明距={t.hamming_dist}, 置信度={t.confidence:.2f}")
         print(f"  归因置信度: {t.attribution_confidence:.2f}")
         if t.tampered is not None:
             print(f"  篡改判定: {'是' if t.tampered else '否'}")
             if t.tampered_paragraphs:
                 print(f"  被改段落: {t.tampered_paragraphs}")
         print(f"  溯源命令: aawm trace <text> --meta \"{label}\" ...")
-        return 3 if t.attribution_abstain else 0
+        return 0
+    if kind == "abstain":
+        print("\n结论: 不可判定（不给出具体 UID/用户）")
+        if label:
+            print(f"  内容证据: meta = {label}")
+        print(f"  原因: {reason}")
+        print("  归因: ⚠ 避免输出可能错误的 UID/用户——宁可不判定")
+        if label:
+            print(f"  溯源命令: aawm trace <text> --meta \"{label}\" ...")
+        return 3
     print("\n结论: 信道 B 未检出（文本被重度改写，或候选中无正确 meta）")
     return 2
 
