@@ -98,6 +98,11 @@ class EmbedResponse(BaseModel):
     # v0.10 弱嵌入警示：自检余量 <1.5 时 weak_embed=True（trace 可能漏检）
     margin_ratio: float = 0.0
     weak_embed: bool = False
+    # v0.12 可靠性分级（default 模式恒为 high；adaptive 模式按容量分级）：
+    # high  - 容量 ≥10（中文约 ≥1200 字），检出与归因均稳定
+    # medium- 容量 6-9，检出常存活但归因可能失败
+    # low   - 容量 <6 或 weak_embed=True，任何结论仅供参考
+    reliability: str = "high"
 
 
 class FindMetaCandidate(BaseModel):
@@ -145,7 +150,7 @@ def create_app():
     """创建 FastAPI app。"""
     from fastapi import FastAPI, HTTPException
 
-    app = FastAPI(title="AAWM Watermark Service", version="0.11.1")
+    app = FastAPI(title="AAWM Watermark Service", version="0.12.0")
 
     @app.get("/v1/health")
     async def health() -> dict:
@@ -228,6 +233,7 @@ def create_app():
             n_bits=result.n_bits,
             margin_ratio=result.margin_ratio,
             weak_embed=result.weak_embed,
+            reliability=result.reliability,
         )
 
     @app.post("/v1/find-meta", response_model=FindMetaResponse)

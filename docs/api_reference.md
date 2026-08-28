@@ -30,6 +30,8 @@ Watermarker(
     codec_mode: str = "zero_cost",        # v0.7+ codec：default/zero_cost/hybrid（中英双语）
     supplementary_dict: dict | None = None,   # v0.7 hybrid 模式的补充词表
     calibrate_corpus: list[str] | None = None,  # v0.7 null 语料（零感模式阈值标定）
+    calibration: dict | str | None = None,   # v0.12 标定文件（aawm calibrate 产出的
+                                              # JSON dict 或文件路径）——一次标定处处复用
 ) -> None
 ```
 
@@ -47,6 +49,10 @@ Watermarker(
 `calibrate_corpus` 提供**未加水印**的正常输出样本后，`_fit_null_model`
 用每带归一化 ratio 模型（Σ|z|/m）在 5 个 salt 上采样、3σ 上界作为
 null 阈值——能显著降低零感模式的误报（实测 null 误报 13/30 → 0/30）。
+
+`calibration`（v0.12）装载 `aawm calibrate` 产出的标定文件（null 模型 +
+p0 词频表）：词频表盐无关，运行时按当前密钥/盐重算精确 p0，与现场
+`calibrate_corpus` 标定**数学等价**。两者同时给出时 corpus 优先。
 
 ### `embed()`
 
@@ -148,6 +154,10 @@ ratio 是"宁可 abstain 也不错"的权衡旋钮，按部署语料调（详见
 |---|---|
 | `detect_only(text, *, session_salt=None, language=None) -> bool` | 只判存在性 |
 | `calibrate_p0(corpus: list[str], language="en") -> None` | 无水印语料标定逐带基线 |
+| `calibrate_null_model(corpus: list[str]) -> None` | v0.12 拟合 null 阈值模型 + 构建 p0 词频表 |
+| `export_calibration() -> dict` | v0.12 导出标定（可 json.dump 成标定文件复用） |
+| `estimate_capacity(text, *, language=None) -> int` | v0.12 嵌入前容量预检（不改文本，返回 k-bit 容量） |
+| `reliability_tier(capacity: int, weak_embed: bool) -> str`（静态） | v0.12 容量分级：≥10=high / 6-9=medium / <6 或 weak=low |
 | `registry -> UIDRegistry \| None` | 注册库访问 |
 | `keystore -> KeyStore` | 密钥存储访问 |
 
@@ -175,6 +185,9 @@ class EmbedResult:
     margin_ratio: float = 0.0      # 自检余量（自适应模式）；>=1.5 视为信号充足
     weak_embed: bool = False       # True=余量 <1.5（短文本/词典稀疏），
                                    #   trace 可能漏检或归因 abstain，应加大文本再嵌
+    # v0.12 可靠性分级（default 模式恒 high；adaptive 按容量分级，不拒嵌）
+    reliability: str = "high"      # high(≥10bit) / medium(6-9bit, 归因可能失败)
+                                   #   / low(<6bit 或 weak_embed, 结论仅供参考)
 ```
 
 ## TraceResult
@@ -425,16 +438,27 @@ aawm serve --key F [--registry F] [--port 8765] [--log-level info]
 
 ```bash
 aawm embed input.txt --key key.json --user 42 \
-      --codec-mode zero_cost --calibrate-corpus ./corpus/ -o marked.txt
+      --codec-mode zero_cost --calibration calibration.json -o marked.txt
 #   --codec-mode {default,zero_cost,hybrid}    # 默认 zero_cost（中英双语）
+#   --calibration FILE                         # v0.12 标定文件（aawm calibrate 产出，推荐）
 #   --calibrate-corpus DIR|FILE                # null 语料（目录下所有 .txt 或单文件）
 #   --n-bits N                                 # embed 用：编码位数（None=满容量）
 ```
 
-- `embed` 的 meta.json 额外写入 `codec_mode / bands / capacity / n_bits`
+**v0.12 标定命令**：
+
+```bash
+aawm calibrate ./corpus/ -o calibration.json   # 同领域语料（几十篇正常输出）
+aawm calibrate --demo -o calibration.json      # 包内置示例语料（快速体验）
+# 产出 null 阈值模型 + p0 词频表（盐无关，运行时按当前密钥重算）；
+# --key 可选：null 模型与密钥无关，词频表按用户密钥重算
+```
+
+- `embed` 的 meta.json 额外写入 `codec_mode / bands / capacity / n_bits / reliability`
+- `embed` stderr 输出 `[可靠性] high|medium|low`（容量分级；短文本降级不拒嵌）
 - `trace` 读 meta.json 自动回传 `bands/n_bits`；stderr 输出
   `自适应: 容量=… 存活带=…`
-- `serve` 接受 `--codec-mode / --calibrate-corpus` 配置服务端 watermarker
+- `serve` 接受 `--codec-mode / --calibration / --calibrate-corpus` 配置服务端 watermarker
 
 trace 退出码：0=检出水印，2=未检出。
 
@@ -473,9 +497,10 @@ trace 退出码：0=检出水印，2=未检出。
 {"watermarked_text": "...", "session_salt": "<hex>", "user_id": 4660,
  "user_alias": "user-alice", "has_seal": true, "existence_score": 18.1,
  "codec_mode": "zero_cost", "bands": [2,5,9], "capacity": 6, "n_bits": 6,
- "margin_ratio": 2.1, "weak_embed": false}
+ "margin_ratio": 2.1, "weak_embed": false, "reliability": "high"}
 // v0.10：weak_embed=true（自检余量 <1.5）为弱嵌入警告——文本信号不足，
 // trace 可能漏检；应加大文本或换词典密度更高的语料再嵌
+// v0.12：reliability=high|medium|low 容量分级（短文本自动降级，仍正常嵌入）
 ```
 
 ### POST /v1/find-meta
@@ -507,7 +532,7 @@ meta 散失时，在候选存档中反查来源（与 CLI `aawm find-meta` 同�
 {"status": "ok", "watermarker_initialized": true}
 ```
 
-> 服务端 watermarker 模式由 `aawm serve --codec-mode … --calibrate-corpus …` 配置；<br>
+> 服务端 watermarker 模式由 `aawm serve --codec-mode … --calibration …` 配置；<br>
 > 也可在代码里 `set_watermarker(Watermarker(codec_mode="zero_cost", …))` 后 `create_app()`。
 
 ---
