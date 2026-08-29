@@ -18,7 +18,13 @@
 - `AuditLogger`（append-only JSONL）+ 全局 `set_audit_logger / get_audit_logger / audit`
 - `text_fingerprint(text)`：SHA-256 前 16 hex，事件统一携带
 - CLI `embed/trace/find-meta/serve` 新增 `--audit-log FILE`；事件 schema 统一为
-  `op: trace|embed|find_meta` + `source: cli|server`（CLI 原误用 `event` 键，已修正）
+  `op: trace|embed|find_meta` + `source: cli|server|sdk`（CLI 原误用 `event` 键，已修正）
+- **facade SDK 层挂载**（第六轮外部验证唯一缺口）：`Watermarker.embed/trace`
+  经 `audit_sdk` 写 `source=sdk` 事件——`set_audit_logger` 后"3 行代码接入"
+  的 SDK 主路径自动留痕；无全局记录器时零开销 no-op
+- server 路径去重：`/v1/trace`、`/v1/embed`、`/v1/find-meta` 在请求层自行
+  审计（source=server），内部调用经 `suppress_sdk_audit` 抑制 facade 重复
+  审计——同一操作只落一条事件
 
 ### P1-6 密钥轮换（`KeyStore` 多版本 + `aawm rotate-key`）
 
