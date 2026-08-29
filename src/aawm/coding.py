@@ -76,31 +76,74 @@ def crc8(data: bytes) -> int:
     return crc
 
 
+def crc16(data: bytes) -> int:
+    """CRC-16/CCITT-FALSE（poly 0x1021，初值 0xFFFF）。
+
+    v0.13（P2-10）：CADecoder 的 chase 会做 8 次左右 CRC 试验
+    （首轮 + 弱桶组合枚举），CRC-8 单次误报 1/256 → 累计误报
+    ~3%（随机文本实测 5-7%）。CRC-16 单次 1/65536 → 累计
+    <0.1%，随机盐 null 误报被压到噪声水平。
+    """
+    poly = 0x1021
+    crc = 0xFFFF
+    for byte in data:
+        crc ^= byte << 8
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ poly) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc
+
+
+def compute_crc(data: bytes, crc_bits: int) -> int:
+    """按位宽选择 CRC（8→CRC-8/ATM，16→CRC-16/CCITT-FALSE）。"""
+    if crc_bits == 8:
+        return crc8(data)
+    if crc_bits == 16:
+        return crc16(data)
+    raise ValueError(f"crc_bits must be 8 or 16, got {crc_bits}")
+
+
 # ---------------------------------------------------------------------------
 # 载荷构造 / 解析：user_id_bits || CRC-8
 # ---------------------------------------------------------------------------
 
 
-def build_payload(user_id: int, user_id_bits: int = 16) -> List[int]:
-    """构造载荷：user_id 位串 + 其 CRC-8 校验位。
+def build_payload(
+    user_id: int,
+    user_id_bits: int = 16,
+    crc_bits: int = 8,
+) -> List[int]:
+    """构造载荷：user_id 位串 + 其 CRC 校验位。
 
     user_id_bits 必须是 8 的倍数（CRC 按字节计算）。
+    crc_bits：8（CRC-8，旧默认）或 16（v0.13，CA 通道推荐）。
     """
     if user_id_bits % 8 != 0:
         raise ValueError("user_id_bits must be a multiple of 8")
     uid_bytes = int(user_id).to_bytes(user_id_bits // 8, "big")
-    checksum = crc8(uid_bytes)
-    return int_to_bits(user_id, user_id_bits) + int_to_bits(checksum, 8)
+    checksum = compute_crc(uid_bytes, crc_bits)
+    return int_to_bits(user_id, user_id_bits) + int_to_bits(checksum, crc_bits)
 
 
-def parse_payload(payload: List[int], user_id_bits: int = 16) -> Tuple[int, bool]:
-    """解析载荷。返回 (user_id, crc_ok)。"""
-    if len(payload) != user_id_bits + 8:
-        raise ValueError(f"payload length mismatch: {len(payload)} != {user_id_bits + 8}")
+def parse_payload(
+    payload: List[int],
+    user_id_bits: int = 16,
+    crc_bits: int = 8,
+) -> Tuple[int, bool]:
+    """解析载荷。返回 (user_id, crc_ok)。
+
+    crc_bits 必须与嵌入时一致（旧载荷显式传 8）。
+    """
+    if len(payload) != user_id_bits + crc_bits:
+        raise ValueError(
+            f"payload length mismatch: {len(payload)} != {user_id_bits + crc_bits}")
     uid = bits_to_int(payload[:user_id_bits])
-    crc_bits = payload[user_id_bits:]
-    expected = crc8(uid.to_bytes(user_id_bits // 8, "big"))
-    crc_ok = bits_to_int(crc_bits) == expected
+    crc_val = bits_to_int(payload[user_id_bits:])
+    expected = compute_crc(
+        uid.to_bytes(user_id_bits // 8, "big"), crc_bits)
+    crc_ok = crc_val == expected
     return uid, crc_ok
 
 
