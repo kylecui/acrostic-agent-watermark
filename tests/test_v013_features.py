@@ -448,6 +448,52 @@ class TestAudit:
         finally:
             set_audit_logger(None)
 
+    def test_sdk_embed_audits(self, tmp_path):
+        """facade.embed 写审计事件（source=sdk）——第六轮验证唯一缺口。"""
+        from aawm.audit import AuditLogger, set_audit_logger
+        from aawm.plugins.facade import Watermarker
+        logger = AuditLogger(tmp_path / "audit.jsonl")
+        set_audit_logger(logger)
+        try:
+            wm = Watermarker(master_key="42" * 32, codec_mode="zero_cost")
+            wm.embed(LONG_TEXT, user_id=5)
+            events = logger.read_all()
+            assert len(events) == 1, "facade.embed 应写一条审计事件"
+            e = events[0]
+            assert e["op"] == "embed"
+            assert e["source"] == "sdk"
+            assert e["text_sha256"] and len(e["text_sha256"]) == 16
+            assert e["text_chars"] == len(LONG_TEXT)
+            assert e["user_id"] == 5
+            assert "reliability" in e and "weak_embed" in e
+            assert "key_version" in e
+        finally:
+            set_audit_logger(None)
+
+    def test_sdk_trace_audits(self, tmp_path):
+        """facade.trace 写审计事件（含判决字段）。审计在检出与否都写。"""
+        from aawm.audit import AuditLogger, set_audit_logger
+        from aawm.plugins.facade import Watermarker
+        logger = AuditLogger(tmp_path / "audit.jsonl")
+        set_audit_logger(logger)
+        try:
+            wm = Watermarker(master_key="43" * 32, codec_mode="zero_cost")
+            r = wm.embed(LONG_TEXT, user_id=5)
+            wm.trace(r.watermarked_text, session_salt=r.session_salt,
+                     bands=r.bands, n_bits=r.n_bits)
+            events = logger.read_all()
+            assert len(events) == 2, "embed + trace 应各写一条事件"
+            ev = events[-1]
+            assert ev["op"] == "trace"
+            assert ev["source"] == "sdk"
+            assert ev["text_sha256"] and len(ev["text_sha256"]) == 16
+            assert "watermarked" in ev and "uid" in ev
+            assert "attribution_confidence" in ev
+            assert "existence_score" in ev
+            assert "key_version" in ev
+        finally:
+            set_audit_logger(None)
+
 
 # ======================================================================
 # P1-4 指标

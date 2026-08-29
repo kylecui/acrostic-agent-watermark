@@ -9,7 +9,8 @@ CLI（aawm trace / find-meta --audit-log）与 server
 事件公共字段：
 - ts: UTC ISO-8601 时间戳
 - op: trace | embed | find_meta
-- source: cli | server
+- source: cli | server | sdk（sdk=Watermarker Facade 直调；Server 内部调
+  audit() 时 source=server，CLI 用 AuditLogger 直写 source=cli）
 - text_sha256: 嫌疑文本 SHA-256 前 16 hex（内容指纹，不落原文，避免
   审计日志本身成为二次泄露源）
 - text_chars: 文本长度
@@ -21,13 +22,15 @@ find_meta 事件额外：result(match|abstain|none) / matched_label / uid / user
 """
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import hashlib
 import json
 import sys
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, Generator, Optional, Union
 
 
 def text_fingerprint(text: str) -> str:
@@ -95,5 +98,32 @@ def get_audit_logger() -> Optional[AuditLogger]:
 
 def audit(event: Dict[str, Any]) -> None:
     """便捷入口：全局记录器存在时写一条事件。"""
+    if _global_logger is not None:
+        _global_logger.log(event)
+
+
+# --- SDK（facade）审计与 server 路径去重 ------------------------------
+# server 的 /v1/trace、/v1/embed、/v1/find-meta handler 已在请求层自行
+# 审计（source=server），其内部调用 facade.embed/trace 时不应再触发
+# facade 的 SDK 审计（否则同一操作写两条事件）。用 contextvar 标记
+# "本请求已由 server 审计"，SDK 审计入口据此跳过。SDK 直调（无标记）
+# 时正常写 source=sdk 事件。
+_suppress_sdk = contextvars.ContextVar("aawm_suppress_sdk_audit", default=False)
+
+
+@contextlib.contextmanager
+def suppress_sdk_audit() -> Generator[None, None, None]:
+    """在已由上层（server handler）审计的路径里抑制 facade 重复审计。"""
+    token = _suppress_sdk.set(True)
+    try:
+        yield
+    finally:
+        _suppress_sdk.reset(token)
+
+
+def audit_sdk(event: Dict[str, Any]) -> None:
+    """SDK（Watermarker Facade）审计入口：server 已审计时跳过。"""
+    if _suppress_sdk.get():
+        return
     if _global_logger is not None:
         _global_logger.log(event)

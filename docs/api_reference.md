@@ -588,17 +588,25 @@ meta 散失时，在候选存档中反查来源（与 CLI `aawm find-meta` 同�
 ### 审计（`aawm.audit`）
 
 ```python
-from aawm.audit import AuditLogger, set_audit_logger, audit, text_fingerprint
+from aawm.audit import AuditLogger, set_audit_logger, audit, audit_sdk, text_fingerprint
 
 text_fingerprint(text) -> str           # SHA-256 前 16 hex（事件统一携带）
 
 logger = AuditLogger("audit.jsonl")     # append-only JSONL
-set_audit_logger(logger)                # 全局注册（进程内）
+set_audit_logger(logger)                # 全局注册（进程内；SDK 直调自动留痕）
 audit({"op": "trace", "source": "cli", "uid": 4660,
        "text_sha256": text_fingerprint(text)})
+audit_sdk({...})                        # facade 内部用（server 已审计时自动跳过）
 logger.read_all() -> list[dict]         # 读回全部事件（跳过半行容错）
-# 事件 schema：op ∈ {embed, trace, find_meta}，source ∈ {cli, server}
+# 事件 schema：op ∈ {embed, trace, find_meta}，source ∈ {cli, server, sdk}
 ```
+
+**SDK 主路径审计（v0.13 P1-5 完整版）**：`set_audit_logger` 后，
+`Watermarker.embed / trace` 自动写 `source=sdk` 事件（embed 含
+user_id/reliability/weak_embed/capacity；trace 含 watermarked/uid/
+attribution_abstain/attribution_confidence）——"3 行代码接入"也有全量留痕。
+未配置全局记录器时零开销 no-op。server 的 `/v1/*` 由请求层自行审计
+（source=server），内部调用经 `suppress_sdk_audit` 去重，同一操作只落一条。
 
 ### meta 存储（`aawm.meta_store`）
 
