@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 from ..binding import BindingSeal, BindingVerdict, DocumentBinder
 from ..greenlist import BandReport, BandReport as BandStat, GreenlistCodec
 from ..keys import generate_master_key, generate_session_salt
+from ..audit import audit_sdk, text_fingerprint
 from .keystore import KeyStore
 from .registry import UIDRegistry
 from .context import _detect_language
@@ -687,6 +688,22 @@ class Watermarker:
             binder = DocumentBinder(self._master_key, session_salt)
             seal = binder.sign(marked, aad=uid.to_bytes(2, "big"))
 
+        # 5.5 SDK 审计（v0.13 P1-5）：全局审计记录器存在时写一条 embed 事件。
+        #     无记录器时 audit() 静默 no-op——SDK 主路径默认零开销零侵入。
+        audit_sdk({
+            "op": "embed",
+            "source": "sdk",
+            "text_sha256": text_fingerprint(text),
+            "text_chars": len(text),
+            "user_id": uid,
+            "user_alias": alias,
+            "reliability": reliability,
+            "weak_embed": weak_embed,
+            "capacity": k,
+            "n_bits": eff_bits,
+            "key_version": self._keystore.active_version,
+        })
+
         return EmbedResult(
             watermarked_text=marked,
             session_salt=session_salt,
@@ -952,6 +969,24 @@ class Watermarker:
             verdict = binder.verify(text, seal)
             tampered = not verdict.ok
             tampered_paras = list(verdict.mismatched_indices)
+
+        # SDK 审计（v0.13 P1-5）：全局审计记录器存在时写一条 trace 事件
+        # （无记录器时 audit() 静默 no-op）。记录最终判决（abstain 后
+        # uid/user 已置 None），不落原文只落指纹。
+        audit_sdk({
+            "op": "trace",
+            "source": "sdk",
+            "text_sha256": text_fingerprint(text),
+            "text_chars": len(text),
+            "watermarked": watermarked,
+            "uid": uid,
+            "user": user,
+            "attribution_abstain": attribution_abstain,
+            "attribution_confidence": attribution_confidence,
+            "existence_score": report.existence_score,
+            "confidence": confidence,
+            "key_version": used_key_version,
+        })
 
         return TraceResult(
             watermarked=watermarked,

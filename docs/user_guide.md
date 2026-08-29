@@ -806,6 +806,9 @@ aawm calibrate --demo -o calibration.json    # 快速体验（包内置示例语
 - **审计**：`embed/trace/find-meta/serve` 均支持 `--audit-log audit.jsonl`
   （append-only JSONL），事件含 `op / source / uid / text_sha256`——谁在
   什么时候嵌入/溯源了什么文本，事后可查（`aawm.audit.AuditLogger.read_all`）。
+  **SDK 直调同样留痕**：`set_audit_logger(AuditLogger(...))` 后
+  `Watermarker.embed/trace` 自动写 `source=sdk` 事件（无全局记录器时零
+  开销，不配置即关闭）。
 - **指标**：`aawm serve` 暴露 `GET /metrics`（Prometheus 格式），含 trace
   检出/未检/abstain 计数与耗时分布。
 

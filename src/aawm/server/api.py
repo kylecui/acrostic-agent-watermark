@@ -20,6 +20,7 @@ from typing import Any, List, Optional
 from pydantic import BaseModel
 
 from ..plugins import Watermarker
+from ..audit import suppress_sdk_audit
 from .metrics import Metrics
 
 # 模块级 watermarker 单例
@@ -198,15 +199,18 @@ def create_app():
             )
 
         with _metrics.time_it("aawm_request_latency_seconds", op="trace"):
-            result = _watermarker.trace(
-                req.text,
-                session_salt=session_salt,
-                seal=seal,
-                language=req.language,
-                bands=req.bands,
-                n_bits=req.n_bits,
-                archived_uid=req.archived_uid,
-            )
+            # suppress_sdk_audit：trace 请求由本 handler 自行审计
+            # （下方 audit(source=server)），避免 facade 再写一条 SDK 事件。
+            with suppress_sdk_audit():
+                result = _watermarker.trace(
+                    req.text,
+                    session_salt=session_salt,
+                    seal=seal,
+                    language=req.language,
+                    bands=req.bands,
+                    n_bits=req.n_bits,
+                    archived_uid=req.archived_uid,
+                )
         _metrics.inc("aawm_trace_requests_total")
         _metrics.inc("aawm_text_chars_total", len(req.text), op="trace")
         if result.watermarked:
@@ -253,14 +257,16 @@ def create_app():
 
         session_salt = bytes.fromhex(req.session_salt) if req.session_salt else None
         with _metrics.time_it("aawm_request_latency_seconds", op="embed"):
-            result = _watermarker.embed(
-                req.text,
-                user_id=req.user_id,
-                session_salt=session_salt,
-                sign=req.sign,
-                language=req.language,
-                n_bits=req.n_bits,
-            )
+            # 同 /v1/trace：embed 请求由本 handler 自行审计，抑制 facade SDK 审计
+            with suppress_sdk_audit():
+                result = _watermarker.embed(
+                    req.text,
+                    user_id=req.user_id,
+                    session_salt=session_salt,
+                    sign=req.sign,
+                    language=req.language,
+                    n_bits=req.n_bits,
+                )
         _metrics.inc("aawm_embed_requests_total", reliability=result.reliability)
         _metrics.inc("aawm_text_chars_total", len(req.text), op="embed")
         if result.weak_embed:
@@ -343,30 +349,33 @@ def create_app():
         # 信道 B：优先验证段哈希命中的候选；收集全部检出再裁决
         # （不"只取第一个检出"——攻击下存在性盐无关，错误盐也会"检出"，
         #  必须用段哈希证据 + 存档 UID 交叉校验后才可归因）
+        # 候选逐条 trace 的审计由本 handler 统一写（find_meta 事件），
+        # 抑制 facade 对每条候选的 SDK 审计，避免噪声。
         to_try = [r for r in ranked if r[0] > 0] or ranked
         detections = []  # (overlap, index, t, archived_uid)
-        for k, (overlap, i, cand) in enumerate(to_try):
-            if k >= req.max_trace:
-                break
-            seal = None
-            if cand.seal:
-                from ..binding import BindingSeal
-                seal = BindingSeal(
-                    merkle_root=bytes.fromhex(cand.seal["merkle_root"]),
-                    para_hashes=[bytes.fromhex(h) for h in cand.seal["para_hashes"]],
-                    aad=bytes.fromhex(cand.seal.get("aad", "")),
-                    version=cand.seal.get("version", 1),
+        with suppress_sdk_audit():
+            for k, (overlap, i, cand) in enumerate(to_try):
+                if k >= req.max_trace:
+                    break
+                seal = None
+                if cand.seal:
+                    from ..binding import BindingSeal
+                    seal = BindingSeal(
+                        merkle_root=bytes.fromhex(cand.seal["merkle_root"]),
+                        para_hashes=[bytes.fromhex(h) for h in cand.seal["para_hashes"]],
+                        aad=bytes.fromhex(cand.seal.get("aad", "")),
+                        version=cand.seal.get("version", 1),
+                    )
+                t = _watermarker.trace(
+                    req.text,
+                    session_salt=bytes.fromhex(cand.session_salt),
+                    seal=seal,
+                    language=req.language,
+                    bands=cand.bands,
+                    n_bits=cand.n_bits,
                 )
-            t = _watermarker.trace(
-                req.text,
-                session_salt=bytes.fromhex(cand.session_salt),
-                seal=seal,
-                language=req.language,
-                bands=cand.bands,
-                n_bits=cand.n_bits,
-            )
-            if t.watermarked:
-                detections.append((overlap, i, t, cand.archived_uid))
+                if t.watermarked:
+                    detections.append((overlap, i, t, cand.archived_uid))
 
         # 最终裁决（与 CLI aawm find-meta 同规则）：段哈希内容证据优先 +
         # 解码 UID 与存档交叉校验；不确定即 abstain，不输出可能错误的 UID。
