@@ -102,6 +102,11 @@ trace = wm.trace(suspect_text, session_salt=..., bands=...,
 # 也可显式指定 wm.trace(..., key_version=1)。
 # 词典指纹比对：wm.trace(..., dict_version=result.dict_version)
 #   → trace.dict_version_match=False 说明溯源侧词典与嵌入侧不一致，归因需谨慎。
+
+# SDK 全量审计：set_audit_logger 后 embed/trace 自动留痕（source=sdk，
+# append-only JSONL，含 user_id/reliability 或 uid/attribution_confidence）
+from aawm.audit import AuditLogger, set_audit_logger
+set_audit_logger(AuditLogger("audit.jsonl"))
 ```
 
 CLI 等价写法：
