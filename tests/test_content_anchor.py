@@ -220,7 +220,14 @@ class TestDiagnostics:
         emb = CAEmbedder(key)
         r = emb.embed(TEXT, user_id=42)
         assert sum(r.votes_histogram) == r.n_anchorable
-        assert len(r.votes_histogram) == 24  # 16 uid + 8 crc
+        # 16 uid + crc 位宽（v0.13 默认 CRC-16 = 32 桶）
+        assert len(r.votes_histogram) == 16 + emb.config.crc_bits
+
+    def test_votes_histogram_legacy_crc8(self):
+        key = generate_master_key()
+        emb = CAEmbedder(key, CAConfig(crc_bits=8))
+        r = emb.embed(TEXT, user_id=42)
+        assert len(r.votes_histogram) == 24  # 旧 v0.12 载荷布局
 
     def test_decode_reports_votes(self):
         key = generate_master_key()

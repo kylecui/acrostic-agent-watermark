@@ -89,6 +89,21 @@ if trace.watermarked and trace.attribution_abstain:
     print("检出该文档含水印，但归因置信不足——不可判定具体用户（防对抗误归因）")
 ```
 
+**v0.13 可选增强**（均为向后兼容，不传行为不变）：
+
+```python
+# UID 冗余（zero_cost/hybrid）：段落裁剪 50% 仍可归因；容量代价 k_uid=k//r
+result = wm.embed(agent_output, user_id="user-alice", uid_redundancy=2)
+# 存档额外带 result.uid_layout，溯源时回传：
+trace = wm.trace(suspect_text, session_salt=..., bands=...,
+                 n_bits=..., uid_layout=result.uid_layout)
+
+# 密钥轮换后溯源旧水印：trace 自动按 meta/EmbedResult 的 key_version 取钥，
+# 也可显式指定 wm.trace(..., key_version=1)。
+# 词典指纹比对：wm.trace(..., dict_version=result.dict_version)
+#   → trace.dict_version_match=False 说明溯源侧词典与嵌入侧不一致，归因需谨慎。
+```
+
 CLI 等价写法：
 
 ```bash

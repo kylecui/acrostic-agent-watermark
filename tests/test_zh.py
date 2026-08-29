@@ -66,31 +66,35 @@ class TestZhAdapter:
 
 class TestZhWatermark:
     def test_zh_roundtrip(self):
-        """中文 embed→decode 往返成功（短文本容量有限，重试至多 10 次）。"""
+        """中文 embed→decode 往返成功（短文本容量有限，重试至多 50 次）。
+
+        v0.13 CRC-16 载荷 24→32 桶，短文本每桶票数稀释，空桶概率上升，
+        单次往返成功率下降（实测 ~30-50%），重试次数相应从 10 提到 50。
+        """
         key = generate_master_key()
         cfg = CAConfig(language="zh", min_anchorable=20)
         emb, dec = CAEmbedder(key, cfg), CADecoder(key, cfg)
-        for _ in range(10):
+        for _ in range(50):
             r = emb.embed(ZH_TEXT, user_id=42)
             d = dec.decode(r.watermarked_text, r.session_salt)
             if d.success and d.user_id == 42:
                 return
-        assert False, "zh roundtrip failed after 10 retries"
+        assert False, "zh roundtrip failed after 50 retries"
 
     def test_zh_multiple_uids(self):
-        """多 UID 往返（短文本容量有限，每个 UID 重试至多 10 次）。"""
+        """多 UID 往返（短文本容量有限，每个 UID 重试至多 50 次）。"""
         key = generate_master_key()
         cfg = CAConfig(language="zh", min_anchorable=20)
         emb, dec = CAEmbedder(key, cfg), CADecoder(key, cfg)
         for uid in [0, 100, 1000, 10000, 60000]:
             success = False
-            for _ in range(10):
+            for _ in range(50):
                 r = emb.embed(ZH_TEXT, user_id=uid)
                 d = dec.decode(r.watermarked_text, r.session_salt)
                 if d.success and d.user_id == uid:
                     success = True
                     break
-            assert success, f"uid={uid} failed after 10 retries"
+            assert success, f"uid={uid} failed after 50 retries"
 
     def test_zh_wrong_key_rejected(self):
         """错误密钥不能解出原 UID。"""

@@ -27,11 +27,17 @@ from aawm.plugins import Watermarker  # noqa: E402
 
 DEMO_CORPUS_DIR = Path(__file__).resolve().parents[1] / "src" / "aawm" / "data" / "demo_corpus"
 
+# 行尾归一化：Windows 检出 CRLF / Linux LF，否则截断点漂移导致
+# 容量跨平台不稳定（CI 曾因此 flaky）
 LONG_ZH_TEXT = "\n\n".join(
-    p.read_text(encoding="utf-8") for p in sorted(DEMO_CORPUS_DIR.glob("*.md"))
-)[:12000]
+    p.read_text(encoding="utf-8").replace("\r\n", "\n")
+    for p in sorted(DEMO_CORPUS_DIR.glob("*.md")))
 
 SHORT_ZH_TEXT = "这是一个测试文本，用于验证容量分级的行为。数据量很小。"
+
+# 固定盐：embed/estimate_capacity 容量随随机盐波动 ±2（活动带集不同），
+# 固定盐让分级断言确定性成立
+FIXED_SALT = bytes(range(16))
 
 
 def _corpus():
@@ -124,8 +130,8 @@ class TestReliability:
     def test_embed_reliability_field(self):
         corpus = _corpus()
         wm = Watermarker(master_key="ee" * 32, calibrate_corpus=corpus)
-        # 长文本：high（demo 语料拼接容量 ≥10）
-        r_long = wm.embed(LONG_ZH_TEXT, user_id=1)
+        # 长文本：high（demo 语料拼接，固定盐确定性——随机盐容量 ±2 波动）
+        r_long = wm.embed(LONG_ZH_TEXT, user_id=1, session_salt=FIXED_SALT)
         assert r_long.capacity >= 10
         assert r_long.reliability == "high"
         # 短文本：不拒嵌，降级为 low/medium
@@ -136,13 +142,18 @@ class TestReliability:
     def test_estimate_capacity(self):
         corpus = _corpus()
         wm = Watermarker(master_key="ff" * 32, calibrate_corpus=corpus)
-        k_long = wm.estimate_capacity(LONG_ZH_TEXT)
-        k_short = wm.estimate_capacity(SHORT_ZH_TEXT)
+        # 固定盐：与 embed(session_salt=...) 同盐时容量一致且确定
+        k_long = wm.estimate_capacity(LONG_ZH_TEXT, session_salt=FIXED_SALT)
+        k_short = wm.estimate_capacity(SHORT_ZH_TEXT, session_salt=FIXED_SALT)
         assert k_long >= 10
         assert 0 <= k_short < k_long
-        # 随机盐估计：多次调用都在合理区间（长文本稳定 ≥10）
+        assert wm.estimate_capacity(
+            LONG_ZH_TEXT, session_salt=FIXED_SALT) == k_long
+        r = wm.embed(LONG_ZH_TEXT, user_id=1, session_salt=FIXED_SALT)
+        assert r.capacity == k_long
+        # 随机盐估计：多次调用都在合理区间（长文本稳定高位）
         for _ in range(3):
-            assert wm.estimate_capacity(LONG_ZH_TEXT) >= 10
+            assert wm.estimate_capacity(LONG_ZH_TEXT) >= 9
 
 
 # ------------------------------------------------------------------
