@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.13.1 (2026-08-29)
+
+第六轮外部验证（VERIFICATION_REPORT §12.6）唯一缺口修复：P1-5 审计挂载 facade SDK 层。
+
+- **facade SDK 层审计挂载**：`Watermarker.embed/trace` 返回前经 `audit_sdk` 写
+  `source=sdk` 事件（embed 含 user_id/reliability/weak_embed/capacity/key_version；
+  trace 含 watermarked/uid/attribution_*/existence_score/key_version）——
+  `set_audit_logger` 后"3 行代码接入"的 SDK 主路径自动留痕；无全局记录器时
+  零开销 no-op
+- server 路径去重：`/v1/trace`、`/v1/embed`、`/v1/find-meta`（候选循环）在请求层
+  自行审计（source=server），内部调用经 `suppress_sdk_audit` 抑制 facade 重复
+  审计——同一操作只落一条事件
+- 事件 schema 扩展：`source ∈ {cli, server, sdk}`（audit.py 新增 `audit_sdk` /
+  `suppress_sdk_audit`，contextvar 上下文管理器）
+- 测试 +2（test_sdk_embed_audits / test_sdk_trace_audits），全量 399 passed, 1 skipped
+
 ## 0.13.0 (2026-08-28)
 
 主线：P1/P2 产品化收尾——可运维（指标/审计/密钥轮换/meta 存储）、更可靠（CRC-16 / UID 冗余 / 词典指纹）。
@@ -18,13 +34,8 @@
 - `AuditLogger`（append-only JSONL）+ 全局 `set_audit_logger / get_audit_logger / audit`
 - `text_fingerprint(text)`：SHA-256 前 16 hex，事件统一携带
 - CLI `embed/trace/find-meta/serve` 新增 `--audit-log FILE`；事件 schema 统一为
-  `op: trace|embed|find_meta` + `source: cli|server|sdk`（CLI 原误用 `event` 键，已修正）
-- **facade SDK 层挂载**（第六轮外部验证唯一缺口）：`Watermarker.embed/trace`
-  经 `audit_sdk` 写 `source=sdk` 事件——`set_audit_logger` 后"3 行代码接入"
-  的 SDK 主路径自动留痕；无全局记录器时零开销 no-op
-- server 路径去重：`/v1/trace`、`/v1/embed`、`/v1/find-meta` 在请求层自行
-  审计（source=server），内部调用经 `suppress_sdk_audit` 抑制 facade 重复
-  审计——同一操作只落一条事件
+  `op: trace|embed|find_meta` + `source: cli|server`（CLI 原误用 `event` 键，已修正）
+- facade SDK 层挂载与 server 路径去重见 **0.13.1**（第六轮验证缺口，source 扩展为 sdk）
 
 ### P1-6 密钥轮换（`KeyStore` 多版本 + `aawm rotate-key`）
 

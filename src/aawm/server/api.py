@@ -164,7 +164,7 @@ def create_app():
 
     from ..audit import audit, text_fingerprint
 
-    app = FastAPI(title="AAWM Watermark Service", version="0.13.0")
+    app = FastAPI(title="AAWM Watermark Service", version="0.13.1")
 
     @app.get("/v1/health")
     async def health() -> dict:
