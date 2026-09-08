@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aawm-enterprise"
+version = "0.1.0"
+description = "Enterprise components for AAWM — session-level aggregation watermark buffer (deferred document-level embedding)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "BUSL-1.1"
+license-files = ["LICENSE.enterprise"]
+authors = [{name = "AAWM Team"}]
+dependencies = [
+    "acrostic-agent-watermark>=0.13.1",
+]
+
+[project.optional-dependencies]
+proxy = ["fastapi>=0.100", "httpx>=0.24"]
+dev = ["pytest>=7.0", "pytest-asyncio", "httpx"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
