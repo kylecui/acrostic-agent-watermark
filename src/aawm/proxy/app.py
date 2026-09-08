@@ -83,7 +83,7 @@ class ProxyConfig:
         self.salt_archive = Path(salt_archive) if salt_archive else None
         # 流式水印器工厂（v0.14 通用扩展点）：None → 句子级整流
         # （StreamingWatermarker，默认行为不变）。注入自定义工厂可实现
-        # 请求级全文后嵌（见 aawm_enterprise.full_stream.FullTextWatermarker）。
+        # 请求级全文后嵌（见 enterprise 发行包的 full_stream 模块）。
         # 客户端可用请求头 X-AAWM-Watermark-Mode: sentence 强制本次请求
         # 走句子级整流（opt-out）。
         self.streamer_factory = streamer_factory
