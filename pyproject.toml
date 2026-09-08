@@ -1,14 +1,15 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "acrostic-agent-watermark"
 version = "0.13.1"
-description = "Agent-level digital watermarking — universal Agent plugin for user ID traceability"
+description = "Traceable text watermarking for AI-agent long-form deliverables — anti-leak attribution"
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [{name = "AAWM Team"}]
 dependencies = [
     "numpy>=1.24",

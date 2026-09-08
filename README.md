@@ -3,13 +3,13 @@
 [![PyPI version](https://img.shields.io/pypi/v/acrostic-agent-watermark.svg)](https://pypi.org/project/acrostic-agent-watermark/)
 [![PyPI license](https://img.shields.io/pypi/l/acrostic-agent-watermark.svg)](https://pypi.org/project/acrostic-agent-watermark/)
 
-**v0.9 通用 Agent 插件** —— 把水印能力封装为 SDK 中间件，任意 Agent 接入 3 行代码即可自动嵌入用户 ID 水印，实现事后溯源。
+**面向长文档交付物的防泄露溯源组件** —— agent 产出的咨询报告、法律文书、研究交付物经 3 行代码接入即可自动嵌入用户 ID 水印，泄露后可溯源到具体用户。
 
 > **📖 完整用户手册（product-ready）：[docs/user_guide.md](docs/user_guide.md)**
 > 按 6 种使用方式（CLI / 技能包 / Python SDK / 框架适配器 / HTTP 服务 / 代理网关）提供
 > **安装 → 配置 → 使用 → 验证**四步全流程，所有命令均经真实环境冒烟，可直接照做。
 
-> **v0.9 快速接入**（3 行代码）：
+> **v0.13 快速接入**（3 行代码）：
 > ```python
 > from aawm.plugins import Watermarker
 > wm = Watermarker.from_config("key.json", "registry.json")  # 一次性初始化
@@ -38,6 +38,21 @@
 
 关键差异：当多个 agent 共用同一个底层 LLM（如都调 GPT-4o），model 级水印只能证明"这段文本来自 GPT-4o"，无法区分是 agent A 还是 agent B 产出；agent 级水印可以精确到**实例**，支撑多 agent 系统里的归因、审计、追责。
 
+---
+
+## 适用场景与能力边界
+
+> 以下为**七轮独立外部验证**（v0.9.0 → v0.13.1，PyPI 发布版逐字节核验）的最终判定，先读边界再谈能力。
+
+| 场景 | 判定 | 说明 |
+|---|---|---|
+| 内部审计辅助 / 防内部泄露 | ✅ **推荐** | 咨询报告 / 法律文书 / 研究交付物等**长文档**：标定 + ≥1200 字检出 90–100%，归因稳定；运维闭环（metrics/审计/密钥轮换/meta 存储）齐备 |
+| 中低强度攻击下的对抗溯源 | ✅ **可用** | 插入/删除/句乱序存活良好；裁剪 50% 段落归因不翻转（uid_redundancy）；防伪造 0/400；"宁可弃权不错怪"（abstain + 交叉校验） |
+| 法律取证级归因 | ⚠️ **不适用（算法边界）** | 同义改写狠攻（syn40）归因弃权、存在性检测盐无关误报需防御路径拦截——水印不是不可抵赖的生物特征，勿用于需要法律证据链的场合 |
+| 研究复现 / 教学 | ✅ **推荐** | 全量测试 399 项，验证产物公开可复现 |
+
+**对"通用 agent 水印"叙事的说明**：本项目是**通用组件**（任何文本可嵌入），但能力窗口在**长文档**——短稀疏文本（<1200 中文字）会自动分级为 `reliability: low/medium` 并**照常嵌入但不承诺稳定溯源**，绝不假装短文本能取证。生产请按此边界选择场景。
+
 ## "藏头诗"比喻的工程化
 
 传统藏头诗：每句首字母对齐密钥序列，拼出隐藏信息。本项目把这个思路推广到 **token 层面的可验证变换**，并进一步做到**每用户唯一**：
@@ -51,7 +66,7 @@
 
 ## 快速开始
 
-### v0.6 通用 Agent 插件（推荐）
+### 推荐场景：长文档交付物打标（CLI 全流程，30 秒体验）
 
 ```bash
 # 安装（PyPI）
@@ -71,7 +86,7 @@ aawm trace marked.txt --key key.json --registry reg.json \
       --calibration calibration.json --meta marked.meta.json
 ```
 
-没有现成文本？用包内置示例长文直接体验（约 5000 字中文，实测检出 + 归因全通过）：
+没有现成的长文档？用包内置示例直接体验（约 5000 字中文技术交付物，实测检出 + 归因全通过——**演示的就是推荐场景：≥1200 字的长文档**）：
 
 ```bash
 DEMO=$(python -c "import aawm,os;print(os.path.join(os.path.dirname(aawm.__file__),'data','demo_corpus','agent_embedding_guide.md'))")
@@ -374,4 +389,20 @@ acrostic-agent-watermark/
 
 ## 许可证
 
-待定（拟 MIT 或 Apache-2.0）。
+**MIT License** —— 核心代码与全部资产（算法内核、CLI / SDK / HTTP 服务 / 适配器、
+语料数据、tests / docs / CHANGELOG 等验证资产）永久开源，见 [LICENSE](LICENSE)。
+
+### 开源核心 + 商业组件预告
+
+本项目采用 **Open-Core** 形态：
+
+- **现有核心保持 MIT 不变**——七轮独立外部验证建立的信任资产（逐字节可复现）
+  全部位于开源层，此承诺不随版本演进收回；
+- **未来的高价值增量组件**（如聚合水印缓冲层、大规模 meta_store、合规导出套件等）
+  将以**独立模块 + 独立许可**发布，**不混入本包**——MIT 主包的体积、能力与
+  验证基线不受影响，商业层只做"便利层"增量，不做能力阉割。
+
+### 外部贡献
+
+首个 Pull Request 需签署[贡献者许可协议（CLA）](docs/CLA.md)（仅首次，
+一次签署长期有效）——让项目未来在保持 MIT 开源的同时保留商业组件独立授权空间。
