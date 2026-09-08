@@ -69,6 +69,7 @@ class ProxyConfig:
         default_uid: Optional[int] = None,
         min_text_length: int = 50,
         salt_archive: Optional[Path] = None,
+        streamer_factory: Optional[Any] = None,
     ) -> None:
         self.upstream_openai = upstream_openai.rstrip("/")
         self.upstream_anthropic = upstream_anthropic.rstrip("/")
@@ -80,6 +81,12 @@ class ProxyConfig:
         self.default_uid = default_uid
         self.min_text_length = min_text_length
         self.salt_archive = Path(salt_archive) if salt_archive else None
+        # 流式水印器工厂（v0.14 通用扩展点）：None → 句子级整流
+        # （StreamingWatermarker，默认行为不变）。注入自定义工厂可实现
+        # 请求级全文后嵌（见 aawm_enterprise.full_stream.FullTextWatermarker）。
+        # 客户端可用请求头 X-AAWM-Watermark-Mode: sentence 强制本次请求
+        # 走句子级整流（opt-out）。
+        self.streamer_factory = streamer_factory
 
 
 def create_proxy_app(
@@ -215,7 +222,8 @@ def create_proxy_app(
             return _relay_sse_stream(
                 upstream, uid, rewrite=_rewrite_openai_chunk,
                 flush_before=b"data: [DONE]",
-                tail_chunk=_openai_tail_chunk)
+                tail_chunk=_openai_tail_chunk,
+                sentence_mode=_wants_sentence(request))
         return _embed_openai_json(upstream, uid)
 
     def _embed_openai_json(upstream, uid: Optional[int]):
@@ -280,7 +288,8 @@ def create_proxy_app(
         if stream:
             return _relay_sse_stream(
                 upstream, uid, rewrite=_rewrite_anthropic_chunk,
-                flush_before=None, tail_chunk=_anthropic_tail_delta)
+                flush_before=None, tail_chunk=_anthropic_tail_delta,
+                sentence_mode=_wants_sentence(request))
         return _embed_anthropic_json(upstream, uid)
 
     def _embed_anthropic_json(upstream, uid: Optional[int]):
@@ -346,7 +355,8 @@ def create_proxy_app(
             return _relay_sse_stream(
                 upstream, uid, rewrite=_rewrite_responses_chunk,
                 flush_before=b"response.completed",
-                tail_chunk=_responses_tail_delta)
+                tail_chunk=_responses_tail_delta,
+                sentence_mode=_wants_sentence(request))
         return _embed_responses_json(upstream, uid)
 
     def _embed_responses_json(upstream, uid: Optional[int]):
@@ -405,16 +415,28 @@ def create_proxy_app(
     # 通用 SSE 流式中继
     # ------------------------------------------------------------------
 
+    def _wants_sentence(request: Request) -> bool:
+        """请求头 X-AAWM-Watermark-Mode: sentence → 强制句子级整流。"""
+        return (request.headers.get("x-aawm-watermark-mode", "")
+                .strip().lower() == "sentence")
+
     def _relay_sse_stream(upstream, uid: Optional[int], *,
                           rewrite, flush_before: Optional[bytes],
-                          tail_chunk):
+                          tail_chunk, sentence_mode: bool = False):
         """SSE 逐行中继：data 行解析改写，其余行原样转发。
 
         - flush_before：子串匹配某个 data 行（如 OpenAI 的 ``[DONE]``、
           Responses 的 ``response.completed``），在转发该行前先补发 flush 尾句
         - Anthropic 无终止哨兵行 → 流末尾补发尾句 delta
+        - sentence_mode：请求头 X-AAWM-Watermark-Mode: sentence 强制句子级
+          整流（opt-out，覆盖 streamer_factory）
         """
-        streamer = StreamingWatermarker(mw) if uid is not None else None
+        if uid is not None:
+            use_full = cfg.streamer_factory is not None and not sentence_mode
+            streamer = (cfg.streamer_factory(mw) if use_full
+                        else StreamingWatermarker(mw))
+        else:
+            streamer = None
         if streamer is not None:
             # 整流共享同一 session_salt → 拼接后整段可溯源
             from ..keys import generate_session_salt
