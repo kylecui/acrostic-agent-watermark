@@ -1,6 +1,6 @@
 # 聚合水印缓冲层（aawm-enterprise 组件一）设计
 
-> **状态**：Phase 1 定稿 v0.2（2026-09-08）· 作者已拍板（§10 拍板记录）
+> **状态**：Phase 1 定稿 v0.3（2026-09-08）· 作者已拍板（§10 拍板记录）
 > **决策关联**：PRODUCT_GAP_RECOMMENDATIONS.md §8（决策二）+
 > commercialization_path.md §4.2/§5 Phase 1
 > **许可约束**：独立目录 + 独立许可（BUSL-1.1，已定稿 §7），单向依赖
@@ -59,24 +59,32 @@
 
 ## 3. 组件边界与架构
 
-### 3.1 包结构（独立仓库目录，独立发布）
+### 3.1 包结构（仓库子目录 monorepo，独立许可发布）
 
 ```
-aawm-enterprise/                  # 独立包（git 子目录或独立 repo，二选一）
-├── LICENSE.enterprise            # BUSL-1.1（§7，作者拍板后定稿）
+aawm-enterprise/                  # 独立包（仓库子目录，独立 PyPI 包 aawm-enterprise）
+├── LICENSE.enterprise            # BUSL-1.1 + Additional Use Grant（已定稿 §7）
 ├── pyproject.toml                # name = "aawm-enterprise"；dependencies = ["acrostic-agent-watermark>=0.13.1"]
 ├── src/aawm_enterprise/
 │   ├── __init__.py
-│   ├── buffer.py                 # SessionBuffer：会话片段累积 + 容量预检
+│   ├── buffer.py                 # SessionBuffer：会话片段累积 + 幂等去重 + 段落边界
 │   ├── aggregator.py             # AggregateWatermarker：flush 编排 + embed + meta 存档
-│   └── policy.py                 # FlushPolicy：触发策略（容量/空闲/关闭/超限）
+│   ├── policy.py                 # FlushPolicy：触发策略（容量/空闲/关闭/超限）
+│   ├── full_stream.py            # FullTextWatermarker：请求级全文后嵌（proxy 注入实现）
+│   └── proxy_ext.py              # FastAPI router：会话 buffer/close 端点 + A/S 模式注册表
 ├── tests/                        # 独立测试（demo corpus 标定，见 §8）
-└── README.md                     # 边界声明前置（聚合前泄露不护）
+└── README.md                     # 边界声明前置（聚合前泄露不护、预览先行边界）
 ```
 
 依赖方向（铁律，CI 检查）：`aawm_enterprise → aawm`，禁止反向 import。
-MIT 主包（`src/aawm/`）保持零改动——若本设计需要核心小改（如 audit source
-扩展，§6），作为独立 MIT PR 进核心，不进商业层。
+
+**核心改动边界（唯一例外，本节取代"MIT 零改动"承诺）**：full 模式（§5.2）
+需要对核心 proxy 的流式 relay 做一处**通用扩展点**小改——`streamer_factory`
+注入参数（默认 `StreamingWatermarker`，行为不变）。理由：流式 relay 在核心
+route handler 内部完成，enterprise 无法从外部包住；而 full 的整段嵌入能力
+核心非流式路径本就存在（`_embed_openai_json`），注入点是它的流式自然延伸，
+属通用能力而非商业逻辑。full 实现（FullTextWatermarker）与全部商业编排
+（会话聚合、模式注册表、meta 管理）留在 enterprise。除此之外 MIT 主包零改动。
 
 ### 3.2 核心数据流
 
@@ -187,31 +195,46 @@ assert result.reliability == "high"  # 达标：k≥10
 save_deliverable(doc)                # 落盘交付物
 ```
 
-### 5.2 P1.2 proxy 会话聚合（**与 P1.1 同步进首期**，作者拍板）
+### 5.2 P1.2 proxy：full 默认 + 会话聚合（**与 P1.1 同步进首期**，作者拍板）
 
-原设计将 proxy 聚合排后（理由：HTTP 会话无显式结束信号，空闲超时是唯一
-收官点，延迟交付与流式"边出边看"冲突）。作者拍板"能同步就不排后"——
-同步是可行的：proxy 聚合与 P1.1 **共享同一缓冲核心**（SessionBuffer +
-FlushPolicy + AggregateWatermarker），仅多一层 HTTP 接线。范围控制：
+原设计将 proxy 聚合排后。作者拍板"能同步就不排后"，并在质量讨论中进一步
+定调：**proxy 流式默认全文后嵌（full），句子级整流降为 opt-in**——担心成立：
+整流逐句嵌入是"句内局部池 + 高替换密度"（同 codeword 每句重复铺、池小天然
+命中率低、被迫替换多），自然性显著劣于全文嵌入（全文池大、替换稀疏、零失真
+优先）。下游是应用代码而非人眼，TTFB=全文生成时长可接受。
 
-1. **不自动捕获流式输出**：proxy 保持现有每请求句子级整流（模式 S，见下）
-   不变——自动捕获会触发"双水印"冲突；
-2. **只加显式会话缓冲端点**（`X-AAWM-Session-Id` 路由）：
-   - `POST /v1/aawm/buffer/{session}`：append 片段（body=text）
-   - `POST /v1/aawm/buffer/{session}/close`：flush → 返回整篇水印文档 + meta
-   - 应用侧在文档导出点调用 close，拿 marked 全文替换自己的草稿——与 P1.1
-     `append/close` 语义一一对应；
-3. **会话生命周期**：缓冲 key=(session, uid)；空闲超时自动 close（防悬挂），
-   但**不作为唯一收官点**——显式 close 才是（与应用工作流对齐）。
+#### 5.2.1 proxy 水印模式矩阵
 
-**模式护栏（A/S 二选一，防双水印）**：同一 (session, uid) 上，proxy 若已在
-做句子级整流（模式 S=streaming，实时逐请求），则该会话**禁止**再开聚合缓冲
-（模式 A=aggregate）；反之亦然。二选一由路由配置决定（per-session 开关）。
-违反会在 append 时报错（fail-open 返回原文 + 明确错误码），绝不静默双嵌——
-同一文本两套 bands 会让 trace 语义错乱。
+| 模式 | 行为 | TTFB | 自然性 | 适用 |
+|---|---|---|---|---|
+| **full（默认）** | 流式 delta 只缓冲；`[DONE]`/completed（=天然文档边界）→ 整篇 embed（k≥10→high，r 可配）→ **整段尾 delta 下发**（伪流式；切句分块为后续优化） | =全文生成时长 | 最优（稀疏替换） | 文档式生成、代码下游 |
+| **sentence（opt-in）** | 现有句子级整流不变（逐请求共享盐） | 实时 | 较弱（局部池+高密度） | 对话式 UI、人逐字盯 |
+| **预览先行** | **不做**（作者拍板）：通用 SSE 无"覆盖已渲染内容"语义，重发会造成拼接脏文本 + 无印副本扩散；预览先行仅 P1.1 自研 Agent 通道（append 透传=预览、close=定稿） | — | — | — |
 
-**首期 proxy 侧改动**：新增端点 + 会话模式路由，不触碰现有整流逻辑；buffer
-核心复用（不重复实现）。
+模式选择：per-request 头 `X-AAWM-Watermark-Mode: sentence`（缺省 full），
+或部署级配置默认。**A/S 护栏仍然成立**：同一 (session, uid) 的流量只能走
+一种模式——full（请求级全文后嵌）与 sentence（整流）在同一会话混用会产生
+两套 bands；enterprise 侧 mode registry 对 buffer 端点做单向检查（append 时
+session 已注册 sentence → 409 + fail-open），请求级混用靠路由配置纪律。
+
+#### 5.2.2 会话聚合端点（enterprise router，核心 proxy 零逻辑改动）
+
+与 P1.1 **共享同一缓冲核心**（SessionBuffer + FlushPolicy +
+AggregateWatermarker），enterprise 提供 FastAPI router 供部署方 include：
+
+- `POST /v1/aawm/buffer/{session}`：append 片段（body=text）
+- `POST /v1/aawm/buffer/{session}/close`：flush → 返回整篇水印文档 + meta
+- 应用侧在文档导出点调用 close，拿 marked 全文替换自己的草稿——与 P1.1
+  `append/close` 语义一一对应；
+- 会话生命周期：缓冲 key=(session, uid)；空闲超时自动 close（防悬挂），
+  但**不作为唯一收官点**——显式 close 才是。
+
+#### 5.2.3 核心注入点（唯一 MIT 小改）
+
+核心 proxy 的 `_relay_sse_stream` 增加 `streamer_factory` 注入参数（默认
+`StreamingWatermarker`，行为零变化）。enterprise 的 `FullTextWatermarker`
+实现同接口（feed 缓冲返回空、flush 整篇嵌入），部署方经构造参数注入。
+full 逻辑、会话聚合、模式注册表全部在 enterprise 侧——MIT 面纯净。
 
 ---
 
@@ -259,6 +282,9 @@ FlushPolicy + AggregateWatermarker），仅多一层 HTTP 接线。范围控制�
 | 幂等去重 | 同片段重复 append → 缓冲只存一份 |
 | 会话隔离 | 两 (session_id,user_id) 并发 append → flush 互不串扰 |
 | meta 往返 | flush 存档 → trace(读 meta) → 归因 user 正确 |
+| full 模式伪流式 | FullTextWatermarker：feed 返回空串（不提前泄露）、flush 整篇嵌入返回 marked 全文；[DONE] 触发 flush |
+| 核心注入点回归 | streamer_factory 默认值下 proxy 行为与改造前逐字节一致（核心测试全量跑） |
+| A/S 注册表护栏 | session 注册 sentence 后 append buffer → 409 + fail-open，不产生任何嵌入 |
 | 依赖方向 CI | `import aawm_enterprise` 后扫描无 `aawm` 反向引用（核心树 grep 无 enterprise） |
 | fail-open | append/flush 任一步异常 → 透传原文/抛错给调用方，绝不产出半截水印 |
 
@@ -272,11 +298,12 @@ FlushPolicy + AggregateWatermarker），仅多一层 HTTP 接线。范围控制�
 1. `aawm-enterprise` 独立包可 `pip install`（依赖已发布核心 ≥0.13.1）；
 2. 上述测试全绿（独立运行，不依赖核心 tests）；
 3. 单作者首版无外部贡献 → 无需 CLA 触发（CLA 自首个外部 PR 生效）；
-4. MIT 主包零改动（审计选 A），核心 399 项测试不回归；
+4. MIT 主包除 `streamer_factory` 注入点外零改动；注入点默认行为与改造前
+   逐字节一致（核心测试全量回归）；核心 399 项不回归；
 5. 边界披露进企业包 README 顶部；
-6. **P1.2**：proxy 会话缓冲端点（buffer/close）+ A/S 模式护栏生效——同
-   (session, uid) 整流与聚合互斥，违反 fail-open 报错不双嵌；现有整流逻辑
-   与单请求行为零回归。
+6. **P1.2**：proxy full 默认（流式缓冲 → [DONE] 整篇嵌 → 尾 delta 下发）+
+   sentence opt-in + 会话 buffer/close 端点 + A/S 模式护栏生效——违反互斥
+   fail-open 报错不双嵌；sentence 路径与单请求行为零回归。
 
 ---
 
@@ -289,5 +316,6 @@ FlushPolicy + AggregateWatermarker），仅多一层 HTTP 接线。范围控制�
 | 3 | 许可 | **接受推荐**：BUSL-1.1 + Additional Use Grant，Change License=Apache-2.0（2 年） |
 | 4 | 审计边界 | **接受 A**（零核心改动，区分靠 meta 的 session_id） |
 | 5 | P1.2 proxy 聚合 | **不排后，与 P1.1 同步进首期**——共享缓冲核心 + 显式会话端点；立 A/S 模式护栏（同一会话整流与聚合二选一，禁双嵌） |
+| 6 | proxy 模式默认 | **full 默认**（全文后嵌，整段尾 delta 下发），sentence 整流 opt-in；**预览先行不做**（SSE 无覆盖语义 + 防无印副本），仅 P1.1 通道；核心加 `streamer_factory` 通用注入点（唯一 MIT 小改） |
 
 *设计基于 MIT 核心 v0.13.1 公开 API 与验证报告证据链；Licensing 条款以执业律师意见为准。*
