@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "acrostic-agent-watermark"
-version = "0.13.1"
+version = "0.14.0"
 description = "Traceable text watermarking for AI-agent long-form deliverables — anti-leak attribution"
 readme = "README.md"
 requires-python = ">=3.10"
