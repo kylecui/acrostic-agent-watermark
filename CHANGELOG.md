@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.14.0 (2026-09-09)
+
+通用扩展点：流式水印器可注入，为"请求级全文后嵌"（full 模式）提供核心入口。
+商业组件（aawm-enterprise，BUSL-1.1）的 full 实现与代理会话聚合全部依赖此
+注入点，核心本身行为零变化。
+
+- **`ProxyConfig.streamer_factory` 通用注入点**：代理网关默认句子级整流
+  （`StreamingWatermarker`，行为与 0.13.x 完全一致）；注入自定义工厂
+  （同 `feed/flush` 接口）即切换水印策略——**默认 None，行为零变化**
+- **`X-AAWM-Watermark-Mode: sentence` 请求头 opt-out**：客户端可对单次
+  流式请求强制走句子级整流（覆盖 streamer_factory）；非流式路径不受影响
+- OpenAI / Anthropic / Responses 三协议 SSE relay 均透传注入点；流式
+  嵌入失败 fail-open 透传原文（既有语义不变）
+- 依赖方向守护：核心源码注释去除企业包全名引用（grep 守护测试保持严格）
+- E2E 冒烟（真实上游 SiliconFlow）：full 模式整篇嵌入后 trace
+  watermarked=True / uid 命中 / crop50% 段落裁剪溯源存活
+
 ## 0.13.1 (2026-08-29)
 
 第六轮外部验证（VERIFICATION_REPORT §12.6）唯一缺口修复：P1-5 审计挂载 facade SDK 层。
