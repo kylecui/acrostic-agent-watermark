@@ -19,6 +19,7 @@ import hashlib
 import json
 import math
 import os
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -588,6 +589,17 @@ class Watermarker:
         # 1. 解析 user_id
         uid, alias = self._resolve_user_id(user_id)
 
+        # 未注册 UID 告警（v0.14.2，issue #23）：embed 不要求 UID 已注册，
+        # 但嵌入 UID 不在注册库时，默认 soft trace 路径无法归因（本版本
+        # 起守门弃权；此前版本会高置信错怪注册用户）。提醒调用方先
+        # register(alias, uid=N)，或显式忽略（不需要归因时）。
+        if (self._registry is not None and isinstance(user_id, int)
+                and uid not in self._registry):
+            warnings.warn(
+                f"UID {uid} 未在注册库注册——trace 默认路径将无法归因"
+                f"（真值缺席守门）。如需归因请先 "
+                f"registry.register(别名, uid={uid})", stacklevel=2)
+
         # 2. 语言
         lang = self._resolve_language(text, language)
         lang_tag = b"zh" if lang == "zh" else b"en"
@@ -763,6 +775,7 @@ class Watermarker:
         soft_match: bool = True,
         match_margin: float = 2.0,
         match_margin_ratio: Optional[float] = 0.3,
+        match_score_floor: float = 0.5,
         bands: Optional[List[int]] = None,
         n_bits: Optional[int] = None,
         archived_uid: Optional[int] = None,
@@ -783,7 +796,17 @@ class Watermarker:
                 需注册库非空；否则回退硬判决路径。软匹配结果只在水印
                 存在性判定通过（watermarked）后采纳——soft_match 是候选
                 区分器，不回答"是否嵌了水印"（null 文本也可能与某候选
-                方向对齐）。
+                方向对齐）。真值缺席守门（v0.14.2，issue #23）：嵌入
+                UID 不在注册库时，硬解码值注入候选集参与竞争，它得分
+                是理论最大值（s(T)=Σ|z|）——赢下打分即说明注册库不含
+                信号真身，归因弃权而非错怪最近注册用户。
+            match_score_floor: 真值缺席守门阈值（v0.14.2，issue #23）。
+                胜出候选的 soft 得分须 ≥ floor×Σ|z|（信号质量上限，
+                =硬解码值的理论得分），否则视为"注册库全体候选与信号
+                均有实质分歧"（真值缺席）→ 弃权归因。实测未注册 UID
+                误归因场景该比值 ≤0（候选与信号半数以上带相反），
+                干净往返=1.0，温和攻击 0.6~1.0；0.5 为"宁可 abstain"
+                侧的默认权衡。None/0 关闭守门（v0.14.1 行为）。
             match_margin: 软判决绝对置信阈值。最优与次优得分差 < margin
                 时视为不可靠（soft_uid=None）。在已嵌入（含受损）文本上
                 实测 margin=2.0 可把温和攻击下的错误匹配全部转为 abstain。
@@ -918,6 +941,26 @@ class Watermarker:
                             min_n=1, margin=match_margin,
                             margin_ratio=match_margin_ratio)
                     if watermarked and soft_uid is not None:
+                        # 真值缺席守门（v0.14.2，issue #23）：soft 是最近邻
+                        # 分类器，margin 拒绝的是"歧义"（最优次优接近），
+                        # 拒绝不了"真值缺席时候选集体皆错"——嵌入 UID 不在
+                        # 注册库时错误候选间 gap 照样很大（实测 4/5 高置信
+                        # 错怪）。硬解码位=sign(z)，故信号质量上限
+                        # s_max=Σ|z|（=硬解码值的理论得分）。胜出候选得分
+                        # 显著低于该上限，说明信号与全体候选都有实质分歧
+                        # ——真值很可能缺席 → 弃权，而非错怪最近候选。
+                        if uid_layout is not None:
+                            # 冗余路径只用 layout 带打分，多余活动带的
+                            # 噪声 |z| 不计入上限
+                            layout_set = set(layout_flat)
+                            s_max = sum(abs(st.z) for st in report.bands
+                                        if st.has_signal and st.band in layout_set)
+                        else:
+                            s_max = report.existence_score
+                        floor = (match_score_floor or 0.0) * s_max
+                        if s_max > 0 and best_score < floor:
+                            soft_uid = None
+                    if watermarked and soft_uid is not None:
                         # k-bit → 注册库全宽 UID（v0.14.1，issue #19）：
                         # 归因成功时 uid 返回映射后的全宽 UID，k-bit 打分值
                         # （可含单比特解码误差）保留在 soft_uid 字段——
@@ -944,6 +987,14 @@ class Watermarker:
                         margin=match_margin,
                         margin_ratio=match_margin_ratio,
                     )
+                    if watermarked and soft_uid is not None:
+                        # 真值缺席守门（v0.14.2，issue #23）：同 adaptive
+                        # 分支。default 检测 min_n=2，soft 打分 min_n=1，
+                        # 上限按 min_n=1 重算保持一致。
+                        s_max = codec.detect(text, min_n=1).existence_score
+                        floor = (match_score_floor or 0.0) * s_max
+                        if s_max > 0 and best_score < floor:
+                            soft_uid = None
                     if watermarked and soft_uid is not None:
                         uid = soft_uid
                         user = self._registry.lookup(uid)
