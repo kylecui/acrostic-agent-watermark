@@ -99,7 +99,10 @@ class TraceResult:
 
     Attributes:
         watermarked: 是否检出水印（存在性判定）
-        uid: 解码出的 UID（int），未检出/低置信时为 None
+        uid: 归因成功（user 非空）时为注册库全宽 UID（v0.14.1 起，
+            与 user 同一语义层）；归因失败但水印存在时为解码/打分
+            中间值（自适应路径为 k-bit 空间值，可含解码误差）；未检出/
+            低置信时为 None。k-bit 软判决打分值另见 soft_uid 字段。
         user: 注册库匹配到的用户别名；None=无匹配或无注册库
         hamming_dist: 与最近邻 UID 的汉明距（-1=无匹配）
         confidence: 存在性置信度 [0,1]，基于 existence_score 归一化。
@@ -568,6 +571,11 @@ class Watermarker:
                 存活率显著提升（crop50 实测 1-3/5 → 5/5）。代价：UID
                 位空间缩小 r 倍（容量 k → floor(k/r) 位）。与 n_bits
                 同时给出时 n_bits 是冗余后的 UID 位宽（需 k >= n_bits*r）。
+                未显式传 n_bits 且 UID 放不进冗余后的位空间
+                （uid.bit_length() > floor(k/r)）时抛 ValueError——绝不
+                静默截断（截断 UID 会被 trace 以高置信返回，注册库含
+                同低位用户时跨用户误归因）；显式传 n_bits 时保留文档化
+                的"取低 n_bits 位"语义。
 
         自适应模式（zero_cost/hybrid，中英文一致）注意：
             UID 实际编码在 n_bits 位空间——user_id 超出时取低 n_bits 位
@@ -649,11 +657,16 @@ class Watermarker:
                 threshold = self._compute_threshold_adaptive(report, lang_tag)
                 margin = report.existence_score / threshold if threshold > 0 else float("inf")
                 uid_ok = uid_chk == uid_eff
-                cand = (honor, uid_ok, margin, marked, bands, report,
+                # uid_fit（v0.14.1，issue #20）：UID 未被截断（放得进
+                # eff_bits 位）。换盐重试时优先挑能完整编码 UID 的盐，
+                # 而不是余量更高但把 UID 截断的盐。
+                uid_fit = uid_eff == uid
+                cand = (honor, uid_fit, uid_ok, margin, marked, bands, report,
                         session_salt, codec, eff_bits, k, layout)
-                if best is None or (honor, uid_ok, margin) > (best[0], best[1], best[2]):
+                if best is None or (honor, uid_fit, uid_ok, margin) > (
+                        best[0], best[1], best[2], best[3]):
                     best = cand
-                if honor and uid_ok and margin >= 1.5:
+                if honor and uid_fit and uid_ok and margin >= 1.5:
                     break
                 if attempt < max_attempts - 1:
                     if not salt_fixed:
@@ -664,8 +677,19 @@ class Watermarker:
                         rng = random.Random(rng_seed + attempt + 1)
                     else:
                         rng = None
-            (_, _, best_margin, marked, bands, report, session_salt,
+            (_, _, _, best_margin, marked, bands, report, session_salt,
              best_codec, eff_bits, k, layout) = best
+            # 冗余路径 UID 位宽守门（v0.14.1，issue #20）：UID 放不进
+            # k//r 位时旧实现静默截断（uid_eff = uid & mask），trace 会以
+            # 高置信返回截断 UID——注册库含同低位的其他用户时跨用户误归因。
+            # 未显式传 n_bits 时 fail-fast；显式 n_bits 属调用方明知的
+            # 低位宽请求，保留文档化的"取低 n_bits 位"语义。
+            if redundant and n_bits is None and uid.bit_length() > eff_bits:
+                raise ValueError(
+                    f"UID {uid} 需 {uid.bit_length()} bit，uid_redundancy="
+                    f"{uid_redundancy} 下每份仅 {eff_bits} bit（容量 k={k}），"
+                    f"无法完整编码——请加长文本/降低 uid_redundancy/"
+                    f"改用 uid_redundancy=1，或显式传 n_bits 指定位宽")
         else:
             marked = codec.embed(text, uid, bias=bias, rng=rng)
             report = codec.detect(marked)
@@ -894,9 +918,25 @@ class Watermarker:
                             min_n=1, margin=match_margin,
                             margin_ratio=match_margin_ratio)
                     if watermarked and soft_uid is not None:
-                        uid = soft_uid
-                        # k-bit → 注册库 16-bit UID（取低 n_bits 位匹配的注册项）
-                        user = self._lookup_masked(soft_uid, reg_uids, mask)
+                        # k-bit → 注册库全宽 UID（v0.14.1，issue #19）：
+                        # 归因成功时 uid 返回映射后的全宽 UID，k-bit 打分值
+                        # （可含单比特解码误差）保留在 soft_uid 字段——
+                        # 两个字段不再语义分裂（旧版 uid=105/user=张三 并列）。
+                        hit = self._lookup_masked_full(soft_uid, reg_uids, mask)
+                        if hit is None:
+                            # soft 打分值可含单比特解码误差（issue #19：
+                            # 候选 121 打分后返回 105）——直接掩码查不中时
+                            # 退避掩码最近邻（与硬路径同阈值），命中则回填全宽。
+                            m = self._registry.masked_nearest_match(
+                                soft_uid, mask,
+                                max_hamming=self._thresholds.max_hamming)
+                            hit = (m[0], m[1]) if m is not None else None
+                        if hit is not None:
+                            uid, user = hit
+                        else:
+                            # 未匹配到注册库用户：uid 保留 k-bit 解码值
+                            uid = soft_uid
+                            user = None
                 else:
                     soft_uid, best_score, soft_gap = codec.soft_match(
                         text, reg_uids,
@@ -913,13 +953,26 @@ class Watermarker:
                 if watermarked and soft_uid is None:
                     uid = None
             elif watermarked and uid is not None:
-                match = self._registry.nearest_match(
-                    uid, max_hamming=self._thresholds.max_hamming)
+                if adaptive and eff_bits < 16:
+                    # 自适应 k-bit 空间（v0.14.1，issue #19）：解码值在
+                    # k-bit 空间，与全宽注册 UID 直接算汉明距是无意义比较
+                    # （k-bit 截断值 vs 16-bit 真值）——按掩码最近邻匹配。
+                    mask_h = (1 << eff_bits) - 1
+                    match = self._registry.masked_nearest_match(
+                        uid, mask_h, max_hamming=self._thresholds.max_hamming)
+                else:
+                    mask_h = None
+                    match = self._registry.nearest_match(
+                        uid, max_hamming=self._thresholds.max_hamming)
                 if match is not None:
-                    _, user, hamming_dist = match
+                    # 归因成功：uid 回填注册库全宽 UID（与 soft 路径语义一致）
+                    full_uid, user, hamming_dist = match
+                    uid = full_uid
                 else:
                     hamming_dist = min(
-                        (bin(uid ^ u).count("1") for u in self._registry.list_all()),
+                        (bin((uid ^ u) & mask_h).count("1") if mask_h
+                         else bin(uid ^ u).count("1")
+                         for u in self._registry.list_all()),
                         default=-1,
                     )
 
@@ -1083,12 +1136,20 @@ class Watermarker:
 
         return disc * cap
 
-    def _lookup_masked(self, k_uid: int, reg_uids: List[int], mask: int) -> Optional[str]:
-        """k-bit UID → 注册库用户（低 n_bits 位匹配；多位命中取最小 UID）。"""
+    def _lookup_masked_full(
+            self, k_uid: int, reg_uids: List[int], mask: int
+    ) -> Optional[Tuple[int, str]]:
+        """k-bit UID → 注册库 (全宽 UID, 别名)（低 n_bits 位匹配；多位命中取最小 UID）。"""
         hits = [u for u in reg_uids if (u & mask) == k_uid]
         if not hits:
             return None
-        return self._registry.lookup(min(hits))
+        full_uid = min(hits)
+        return full_uid, self._registry.lookup(full_uid)
+
+    def _lookup_masked(self, k_uid: int, reg_uids: List[int], mask: int) -> Optional[str]:
+        """k-bit UID → 注册库用户（低 n_bits 位匹配；多位命中取最小 UID）。"""
+        hit = self._lookup_masked_full(k_uid, reg_uids, mask)
+        return hit[1] if hit is not None else None
 
     @staticmethod
     def _uid_alias_match(uid: Optional[int], archived_uid: Optional[Any],

@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.14.1 (2026-09-09)
+
+第 9 轮外部验证问题修复（GitHub issues #18 / #19 / #20）：API 误用的
+隐蔽性收敛 + 溯源语义统一 + 冗余嵌入位宽守门。
+
+- **#18 `UIDRegistry.register()` 类型守卫**：`user_alias` 非 str（如把
+  UID `1001` 当别名传入）时抛 `TypeError` 并提示正确用法——旧版静默
+  接受 int 别名并自动分配 uid=1，下游溯源全部 abstain 且无错误指向
+- **#19 `trace().uid` 语义统一**：归因成功（user 非空）时 uid 返回
+  注册库全宽 UID，k-bit 打分/解码中间值保留在 `soft_uid` 等字段——
+  旧版 soft 路径 uid 与 user 语义分裂（uid=105 与 张三 并列返回）；
+  硬路径自适应场景改用掩码最近邻匹配（k-bit 解码值与全宽注册 UID
+  直接算汉明距是无意义比较），命中后同样回填全宽 UID
+- **#20 冗余嵌入 UID 位宽守门**：`embed(uid_redundancy=r)` 未显式传
+  n_bits 且 `uid.bit_length() > floor(k/r)` 时抛 `ValueError`——旧版
+  静默截断 UID 并被 trace 以高置信返回截断值（注册库含同低位用户时
+  跨用户误归因）；换盐重试现在优先挑能完整编码 UID 的盐（uid_fit）。
+  显式传 n_bits 时保留文档化的"取低 n_bits 位"语义
+- 新增回归测试 12 项（tests/test_v0141_issue_fixes.py）；核心 415
+  passed + 企业包 27 passed
+
 ## 0.14.0 (2026-09-09)
 
 通用扩展点：流式水印器可注入，为"请求级全文后嵌"（full 模式）提供核心入口。

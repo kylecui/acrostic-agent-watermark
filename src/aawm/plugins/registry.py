@@ -81,8 +81,19 @@ class UIDRegistry:
             分配的 UID
 
         Raises:
+            TypeError: user_alias 不是 str（典型误用：把 UID 当别名传入，
+                如 register(1001)——旧版本会静默接受 int 并自动分配
+                uid=1，导致下游溯源全部 abstain 且无错误指向）
             ValueError: 别名已存在 / UID 已被占用 / UID 超范围
         """
+        # 类型守卫（v0.14.1，issue #18）：int 别名静默接受会把调用方的
+        # "注册 UID 1001" 意图放大成 "注册别名 '1001' + 自动 uid=1"，
+        # 下游 trace 全部 abstain 且无任何指向误注册的线索。
+        if not isinstance(user_alias, str):
+            raise TypeError(
+                f"user_alias 必须为 str（用户别名），got "
+                f"{type(user_alias).__name__}；注册指定 UID 请用 "
+                f"register(别名, uid={user_alias!r})")
         with self._lock:
             if user_alias in self._alias2uid:
                 # 幂等：已注册则返回原 UID
