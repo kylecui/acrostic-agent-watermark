@@ -57,10 +57,14 @@ def aggregate():
     rows = []
     excluded = []
     for fn in files:
+        if fn.startswith("."):
+            continue  # .counter 等隐藏文件非响应
         try:
             r = json.load(open(os.path.join(RESP_DIR, fn), encoding="utf-8"))
         except Exception:
             continue
+        if not isinstance(r, dict):
+            continue  # 防御: 非对象 JSON（如纯数字文件）不当响应
         pid = r.get("pid", fn)
         sp = r.get("spots", {})
         orig_ids = [k for k in sp if str(k).startswith("o")]
