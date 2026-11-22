@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from ..binding import BindingSeal, BindingVerdict, DocumentBinder
-from ..greenlist import BandReport, BandReport as BandStat, GreenlistCodec
+from ..greenlist import (
+    SOFT_MIN_N,
+    BandReport,
+    BandReport as BandStat,
+    GreenlistCodec,
+)
 from ..keys import generate_master_key, generate_session_salt
 from ..audit import audit_sdk, text_fingerprint
 from .keystore import KeyStore
@@ -92,6 +97,10 @@ class EmbedResult:
     key_version: int = 1
     dict_version: str = ""
     uid_layout: List[List[int]] = field(default_factory=list)
+    choice_scorer_used: bool = False
+    """候选选择是否用了搭配打分器（v0.15）。True=calibrate_corpus
+    可用且语言支持（中文）时经语料邻居兼容度选词，病句率低于
+    纯随机选择；False=随机选择（旧行为）。"""
 
 
 @dataclass
@@ -106,9 +115,11 @@ class TraceResult:
             低置信时为 None。k-bit 软判决打分值另见 soft_uid 字段。
         user: 注册库匹配到的用户别名；None=无匹配或无注册库
         hamming_dist: 与最近邻 UID 的汉明距（-1=无匹配）
-        confidence: 存在性置信度 [0,1]，基于 existence_score 归一化。
-            只反映"信号多强"，不反映"UID 解对没有"（对抗场景可能
-            存在性存活但归因错误）——归因可靠性看 attribution_confidence。
+        confidence: 存在性信号强度 [0,1]（v0.15 阈值相对归一化：
+            判决阈值处 = 1/3，3×阈值 = 1）。只反映"信号多强"，
+            不反映"UID 解对没有"（对抗场景可能存在性存活但归因
+            错误）——归因可靠性看 attribution_confidence。
+            注意：这是信号强度的单调归一化，不是统计概率。
         attribution_confidence: 归因置信度 [0,1]（v0.10）。综合判别力
             （soft 路径 gap/√n_dict、硬路径汉明距）与容量充分性
             （自适应 k-bit 空间相对候选数）。低于 attribution_floor
@@ -132,6 +143,11 @@ class TraceResult:
         dict_version_match: 与传入 dict_version（meta 存档）的比对结果。
             None=未传存档指纹无从比对；False=词典已变更，带映射失效
             （本次结果可能漏检/失真，应排查词典版本）
+        evidence_mask: 证据位掩码（v0.15），与 uid 同位空间：非自适应
+            路径 bit b=带 b 有 ≥1 计票词；自适应路径 bit j=bands[j]
+            有信号。存档 UID 交叉校验只比对掩码内位——无证据位的
+            默认 0 是"无证据"而非"矛盾"（旧严格相等把"无法验证"误读
+            为"失真"，置位带无词典词时无攻击也必然弃权）
     """
     watermarked: bool
     uid: Optional[int]
@@ -155,6 +171,7 @@ class TraceResult:
     key_version: int = 1
     dict_version: str = ""
     dict_version_match: Optional[bool] = None
+    evidence_mask: int = 0
 
 
 # ----------------------------------------------------------------------
@@ -182,14 +199,28 @@ class DetectionThresholds:
     adaptive_factor: float = 2.0
     # 固定下限：极短文本的兜底阈值
     existence_floor: float = 8.0
-    # 置信度归一化分母（existence_score / 此值 → [0,1]）
+    # [已弃用 v0.15] 旧版存在性 confidence 的 magic 归一化分母
+    # （existence_score/40）。v0.15 起 confidence 改为阈值相对归一化
+    # （判决阈值处=1/3，3×阈值=1），跨文本/跨阈值可比；本字段保留
+    # 仅为构造参数向后兼容，不再参与计算。
     confidence_scale: float = 40.0
     # 注册库最近邻匹配最大汉明距
     max_hamming: int = 3
     # 自适应路径（min_n=1 统计）线性阈值：intercept + slope × 活动带数
-    # 实测依据：p0 标定后 null Σ|z| ≈ 1.0-1.1/带，marked ≈ 2.0+/带
-    adaptive_intercept: float = 1.0
-    adaptive_slope: float = 1.6
+    # v0.15 实测依据（封顶计票 PER_WORD_CAP=3，demo 语料 8 盐，未标定 p0）：
+    #   null 包络 Σ|z| ≤ 0.69 + 1.29·m；marked 均值 ≈ 1.54/带（min 1.20）
+    # 默认线取 null 包络上方：marked 均值余量 ≈1.1×。零感词典（136 组）
+    # 下存在性余量天生单薄，短文本常弱嵌入——生产必须
+    # calibrate_null_model 按自身语料标定（标定后 salt 择优可使余量
+    # 回到 1.5× 标准）
+    adaptive_intercept: float = 0.7
+    adaptive_slope: float = 1.35
+    # 无 meta 盐候选扫描的多重比较校正（v0.15），**仅非自适应路径**：
+    # 默认模式阈值是理论 √n 近似，候选盐 k≈8 个独立映射使 null 误报
+    # ≈ 1−(1−p)^k（单盐 p≈4% 时升至 ~28%）——候选路径要求 ≥1.3×阈值。
+    # 自适应路径的默认常数来自跨盐 null 包络实测（取的是各盐最大值），
+    # 盐间方差已内含，再乘校正会把真水印（余量 ~1.5×）压到阈值下。
+    salt_scan_margin: float = 1.3
     # 归因置信度（v0.10）判定参数。对抗场景最危险失败模式是"高置信度
     # 错误归因"——存在性存活但 UID 解错，仍输出错误用户结论。因此
     # attribution_confidence 独立于存在性 confidence，专门编码
@@ -491,6 +522,35 @@ class Watermarker:
             calibrate_corpus=self._calibrate_corpus)
         return self._apply_p0_vocab(codec, lang_tag)
 
+    def _choice_scorer(self, lang_tag: bytes):
+        """候选选择搭配打分器（v0.15）：calibrate_corpus 可用且为中文时，
+        用语料邻居兼容度给同义候选打分（build_char_context 索引），
+        embed 按分数降序选词，降低病句率。英文无字符级搭配模型，
+        返回 None（保持随机选择）。结果按 lang_tag 缓存。
+        """
+        if not self._calibrate_corpus or lang_tag != b"zh":
+            return None
+        cached = getattr(self, "_choice_scorer_cache", None)
+        if cached is None:
+            cached = self._choice_scorer_cache = {}
+        if lang_tag in cached:
+            return cached[lang_tag]
+        from ..collocation import build_char_context
+        probe = self._build_codec(bytes(16), lang_tag)
+        words = set(probe._raw_word_owner)
+        left, right = build_char_context(list(self._calibrate_corpus), words)
+
+        def scorer(prev_char: str, choice: str, next_char: str) -> float:
+            s = 0.0
+            if not prev_char or prev_char in left.get(choice, ()):
+                s += 0.5
+            if not next_char or next_char in right.get(choice, ()):
+                s += 0.5
+            return s
+
+        cached[lang_tag] = scorer
+        return scorer
+
     def _apply_p0_vocab(self, codec: GreenlistCodec, lang_tag: bytes) -> GreenlistCodec:
         """标定文件的词频表 → 当前盐下的精确 p0（calibrate_corpus 缺席时）。
 
@@ -607,7 +667,14 @@ class Watermarker:
         # 3. 盐
         salt_fixed = session_salt is not None
         if session_salt is None:
-            session_salt = generate_session_salt()
+            # v0.15：默认盐改为 主密钥+canonical(文本) 确定性派生
+            # （nonce=0），不再随机。canonical = 组内词替换为组头的
+            # 嵌入不变规范化（embed 只在组内换词），因此 meta 散失时
+            # trace 可从水印文本重算出同一盐恢复溯源；同一文本重复
+            # 嵌入得到同一盐，行为可复现。
+            from ..keys import derive_session_salt
+            canon = self._canonical_text(text, lang_tag)
+            session_salt = derive_session_salt(self._master_key, canon, nonce=0)
 
         rng = None
         if rng_seed is not None:
@@ -636,7 +703,10 @@ class Watermarker:
             # 时返回余量最大的一次（UID 正确优先）。
             # 固定盐时只能换 rng 流（帮助多候选池，单候选无解）。
             # 注意容量随 salt 变化（活动带集不同），每次尝试须重算。
-            max_attempts = 4
+            # v0.15：attempts=6（与 _salt_candidates 的 nonce 范围对齐，
+            # 保证任一重试盐在 meta 散失后仍可找回）；派生盐下重试是
+            # 确定性的，多 nonce 是给容量方差（k 随带映射波动）的固定采样。
+            max_attempts = 6
             # (honor, uid_ok, margin, marked, bands, report, salt, codec, eff_bits, k, layout)
             # honor = 满足请求的 n_bits（显式请求时要求 k >= n_bits）——
             # 换盐重试会让容量缩水（如 15→11），若直接按满容量钳位会
@@ -644,6 +714,7 @@ class Watermarker:
             # 冗余模式（uid_redundancy>1）下 k_uid = k // r 是 UID 位宽，
             # n_bits 语义相应变为冗余后的位宽。
             redundant = uid_redundancy > 1
+            scorer = self._choice_scorer(lang_tag)
             best = None
             for attempt in range(max_attempts):
                 k = codec.capacity(text)
@@ -654,7 +725,7 @@ class Watermarker:
                     uid_eff = uid & ((1 << eff_bits) - 1) if eff_bits < 16 else uid
                     marked, layout = codec.embed_redundant(
                         text, uid_eff, r=uid_redundancy, n_bits=eff_bits,
-                        bias=bias, rng=rng)
+                        bias=bias, rng=rng, choice_scorer=scorer)
                     uid_chk, report = codec.detect_redundant(
                         marked, layout, min_n=1)
                     bands = [b for bl in layout for b in bl]
@@ -663,7 +734,8 @@ class Watermarker:
                     eff_bits = n_bits if (honor and n_bits is not None) else k
                     uid_eff = uid & ((1 << eff_bits) - 1) if eff_bits < 16 else uid
                     marked, bands = codec.embed_adaptive(
-                        text, uid_eff, n_bits=eff_bits, bias=bias, rng=rng)
+                        text, uid_eff, n_bits=eff_bits, bias=bias, rng=rng,
+                        choice_scorer=scorer)
                     uid_chk, _, report = codec.detect_adaptive(marked, bands, min_n=1)
                     layout = []
                 threshold = self._compute_threshold_adaptive(report, lang_tag)
@@ -682,7 +754,11 @@ class Watermarker:
                     break
                 if attempt < max_attempts - 1:
                     if not salt_fixed:
-                        session_salt = generate_session_salt()
+                        # v0.15：自检换盐重试改用 nonce 递增的派生盐
+                        # （trace 候选盐按 nonce 0..5 全尝试，找回兼容）
+                        from ..keys import derive_session_salt
+                        session_salt = derive_session_salt(
+                            self._master_key, canon, nonce=attempt + 1)
                         codec = self._build_codec(session_salt, lang_tag)
                     if rng_seed is not None:
                         import random
@@ -759,6 +835,7 @@ class Watermarker:
             key_version=self._keystore.active_version,
             dict_version=codec.dict_version,
             uid_layout=[list(bl) for bl in layout] if layout else [],
+            choice_scorer_used=scorer is not None if adaptive else False,
         )
 
     # ------------------------------------------------------------------
@@ -787,7 +864,12 @@ class Watermarker:
 
         Args:
             text: 嫌疑文本
-            session_salt: 会话盐（有则做信道A验证 + 用原盐解码）
+            session_salt: 会话盐（有则优先用原盐解码）。None 时遍历
+                v0.15 派生候选盐（nonce 0..3 + head 512/128 变体，
+                对应 embed 默认派生盐的全部可能），逐候选检测取
+                得分/阈值余量最大者——v0.15 嵌入的文档 meta 散失
+                仍可溯源；v0.14 及更早的随机盐文档无 meta 时不可恢复
+                （该限制与旧版相同）
             seal: 信道 A 签名（有则验证篡改）
             language: 语言覆盖
             soft_match: 启用软判决注册库匹配（v0.10 起默认 True）。
@@ -845,7 +927,6 @@ class Watermarker:
         lang = self._resolve_language(text, language)
         lang_tag = b"zh" if lang == "zh" else b"en"
 
-        salt = session_salt or generate_session_salt()
         # v0.13 P1-6：按 key_version 取密钥（轮换后旧水印仍可溯源）
         if key_version is not None:
             if key_version not in self._keystore.versions():
@@ -858,55 +939,124 @@ class Watermarker:
         used_key_version = (
             key_version if key_version is not None
             else self._keystore.active_version)
-        codec = self._build_codec(salt, lang_tag, master_key=eff_key)
-        # v0.13 P2-9：词典指纹比对（meta 存档 vs 本次重建 codec）
-        dict_version_match = (
-            codec.dict_version == dict_version
-            if dict_version is not None else None)
-        adaptive = bands is not None or uid_layout is not None
 
-        # 信道 B 检测
-        if uid_layout is not None:
-            # 冗余路径（v0.13 P2-8）：按 layout 聚合多带投票
-            uid_dec, report = codec.detect_redundant(text, uid_layout)
-            active_set = {st.band for st in report.bands if st.has_signal}
-            layout_flat = list(dict.fromkeys(
-                b for bl in uid_layout for b in bl))
-            active = [b for b in layout_flat if b in active_set]
-            capacity = len(bands) if bands is not None else len(layout_flat)
-            eff_bits = n_bits if n_bits is not None else len(uid_layout)
-        elif adaptive:
-            uid_dec, active, report = codec.detect_adaptive(text, bands)
-            capacity = len(bands)
-            eff_bits = n_bits if n_bits is not None else capacity
+        # v0.15 盐解析：显式盐（meta 路径）> 派生候选（meta 散失找回）。
+        # embed 默认用盐 = derive(master, text, nonce 0..3)，trace 无盐时
+        # 按同规则枚举候选 + head 派生（编辑攻击下开头幸存时仍可命中），
+        # 逐候选检测后取 得分/阈值 余量最大者——旧版无盐时随机一盐，
+        # meta 散失即永远漏检。
+        if session_salt is not None:
+            salt_candidates: List[bytes] = [session_salt]
         else:
-            report = codec.detect(text)
-            uid_dec = report.uid
-            active, capacity, eff_bits = [], 0, 0
-            # 兜底：有正确盐但缺 bands 元数据（adaptive 嵌入、meta 散失）
-            # 时非自适应路径会漏检——用文本自身活动带重试自适应检测。
-            # 注：嵌入若留了冗余带（n_bits<容量），UID 位空间不同，
-            # 解码可能失真——始终优先用存档 meta。
-            if (session_salt is not None
-                    and report.existence_score
-                    < self._compute_threshold(report.n_dict_words)):
-                uid_ad, active_ad, rep_ad = codec.detect_adaptive(text, None)
-                # active_ad 非空才采纳兜底：null 文本可整句零词典词，
-                # detect_adaptive 返回的空带报告 existence=0、m=0，
-                # 阈值退化 0 会误报（见 _compute_threshold_adaptive 的 m=0 守卫）。
-                if active_ad and rep_ad.existence_score >= \
-                        self._compute_threshold_adaptive(rep_ad, lang_tag):
-                    adaptive = True
-                    uid_dec, active, report = uid_ad, active_ad, rep_ad
-                    capacity = len(active_ad)
-                    eff_bits = n_bits if n_bits is not None else capacity
+            salt_candidates = self._salt_candidates(text, eff_key, lang_tag)
 
-        # 存在性判定：自适应阈值（自适应路径用带数线性模型）
-        if adaptive:
-            threshold = self._compute_threshold_adaptive(report, lang_tag)
-        else:
-            threshold = self._compute_threshold(report.n_dict_words)
-        watermarked = report.existence_score >= threshold
+        def _try_salt(salt: bytes):
+            """单盐检测：返回 (codec, dict_version_match, adaptive, uid_dec,
+            active, capacity, eff_bits, report, threshold) 或 None。"""
+            c = self._build_codec(salt, lang_tag, master_key=eff_key)
+            dvm = (c.dict_version == dict_version
+                   if dict_version is not None else None)
+            ad = bands is not None or uid_layout is not None
+            # eff_bands：本盐实际使用的带元数据（显式 bands > 兜底
+            # 自探测活动带 > None）——soft_match_adaptive 与证据掩码
+            # 必须用与解码一致的带集，否则 k-bit 空间错位
+            eff_bands = list(bands) if bands is not None else None
+            if uid_layout is not None:
+                # 冗余路径（v0.13 P2-8）：按 layout 聚合多带投票
+                u, rep = c.detect_redundant(text, uid_layout)
+                act_set = {st.band for st in rep.bands if st.has_signal}
+                lay_flat = list(dict.fromkeys(
+                    b for bl in uid_layout for b in bl))
+                act = [b for b in lay_flat if b in act_set]
+                cap = len(bands) if bands is not None else len(lay_flat)
+                eb = n_bits if n_bits is not None else len(uid_layout)
+            elif ad:
+                u, act, rep = c.detect_adaptive(text, bands)
+                lay_flat = None
+                cap = len(bands)
+                eb = n_bits if n_bits is not None else cap
+            else:
+                rep = c.detect(text)
+                # v0.15：UID 硬解码改用 min_n=1 全带检测——弱证据带
+                # （每带 1 票）在 bias=1 嵌入下符号是确定的（g=n 或 0），
+                # min_n=2 丢弃它们会丢真 bit（capped 统计下 n=1 带更
+                # 常见，CLI 无注册库往返因此 UID 失真弃权）。存在性
+                # 统计仍用 min_n=2 报告（阈值口径不变，FPR 不升）。
+                rep_full = c.detect(text, min_n=SOFT_MIN_N)
+                u = rep_full.uid
+                act, cap, eb, lay_flat = [], 0, 0, None
+                eff_bands = None  # 非自适应；兜底采纳后回填活动带
+                # 兜底：缺 bands 元数据（adaptive 嵌入、meta 散失）时
+                # 非自适应路径阈值口径不对（自适应嵌入的 marked 得分
+                # 按带数线性模型标定，min_n=2 的 √n 模型对它系统性
+                # 偏高）——zero_cost/hybrid 模式下无论 min_n=2 得分
+                # 是否过线，都改用文本自身活动带做自适应检测。
+                # 注：嵌入若留了冗余带（n_bits<容量），UID 位空间
+                # 不同，解码可能失真——始终优先用存档 meta。
+                need_fallback = (
+                    rep.existence_score
+                    < self._compute_threshold(rep.n_dict_words)
+                    or self._codec_mode != "default"
+                )
+                if need_fallback:
+                    u_ad, act_ad, rep_ad = c.detect_adaptive(text, None)
+                    # active_ad 非空才采纳兜底：null 文本可整句零词典词，
+                    # detect_adaptive 返回的空带报告 existence=0、m=0，
+                    # 阈值退化 0 会误报（见 _compute_threshold_adaptive 的
+                    # m=0 守卫）。
+                    if act_ad and rep_ad.existence_score >= \
+                            self._compute_threshold_adaptive(rep_ad, lang_tag):
+                        ad = True
+                        u, act, rep = u_ad, act_ad, rep_ad
+                        cap = len(act_ad)
+                        eb = n_bits if n_bits is not None else cap
+                        eff_bands = list(act_ad)
+            thr = (self._compute_threshold_adaptive(rep, lang_tag) if ad
+                   else self._compute_threshold(rep.n_dict_words))
+            return c, dvm, ad, u, act, cap, eb, rep, thr, lay_flat, eff_bands
+
+        best = None
+        best_margin = -1.0
+        salt = salt_candidates[0]
+        for cand in salt_candidates:
+            r = _try_salt(cand)
+            if r is None:
+                continue
+            margin = r[7].existence_score / r[8] if r[8] > 0 else 0.0
+            if margin > best_margin:
+                best_margin = margin
+                best = r
+                salt = cand
+        (codec, dict_version_match, adaptive, uid_dec, active, capacity,
+         eff_bits, report, threshold, layout_flat, eff_bands) = best
+        # v0.15：无 meta 盐的候选扫描施加多重比较校正（仅非自适应
+        # 路径；自适应阈值常数已是跨盐 null 包络，见
+        # DetectionThresholds.salt_scan_margin）；显式盐路径不变。
+        eff_threshold = threshold * (
+            self._thresholds.salt_scan_margin
+            if (session_salt is None and not adaptive) else 1.0)
+        watermarked = report.existence_score >= eff_threshold
+
+        # v0.15 证据掩码：与 uid 同位空间，标记"该位解码有证据"
+        # （无词带/无存活 copy 的默认 bit=0 是"无证据"而非"矛盾"，
+        # 存档 UID 交叉校验按掩码比对）。
+        # 空间规则：非自适应=16-bit 带空间；自适应/冗余=k-bit 空间
+        # （bit j ↔ bands[j] / layout[j] 是否仍有 ≥1 计票词）。
+        sig_bands = {st.band for st in report.bands if st.has_signal}
+        evidence_mask = 0
+        if uid_layout is not None and layout_flat is not None:
+            for j, bit_bands in enumerate(uid_layout):
+                if any(b in sig_bands for b in bit_bands):
+                    evidence_mask |= 1 << j
+        elif adaptive and eff_bands is not None:
+            for j, b in enumerate(eff_bands):
+                if b in sig_bands:
+                    evidence_mask |= 1 << j
+        elif not adaptive:
+            # 非自适应：detect 的 has_signal 是 min_n=2 口径，证据掩码
+            # 用 min_n=1 全带报告（单票带在 bias=1 嵌入下符号确定）
+            r_full = codec.detect(text, min_n=SOFT_MIN_N)
+            evidence_mask = r_full.active_mask
 
         # UID 解码 + 注册库匹配
         uid = uid_dec if watermarked else None
@@ -937,7 +1087,7 @@ class Watermarker:
                             margin_ratio=match_margin_ratio)
                     else:
                         soft_uid, best_score, soft_gap = codec.soft_match_adaptive(
-                            text, k_cands, bands,
+                            text, k_cands, eff_bands,
                             min_n=1, margin=match_margin,
                             margin_ratio=match_margin_ratio)
                     if watermarked and soft_uid is not None:
@@ -1027,8 +1177,13 @@ class Watermarker:
                         default=-1,
                     )
 
-        # 存在性置信度（只反映信号强度，不反映归因可靠性）
-        confidence = min(1.0, report.existence_score / self._thresholds.confidence_scale)
+        # 存在性置信度（只反映信号强度，不反映归因可靠性）。
+        # v0.15：阈值相对归一化——判决阈值处 = 1/3，3×阈值处 = 1，
+        # 上限截断 [0,1]。与旧版 magic 常数 40 相比，本定义跨文本、
+        # 跨阈值、跨盐扫描校正可比；它是信号强度的单调归一化，
+        # 不是统计概率（概率口径见归因 abstain 协议）。
+        confidence = (min(1.0, report.existence_score / (3.0 * eff_threshold))
+                      if eff_threshold > 0 else 0.0)
 
         # 归因置信度（v0.10）：判别力 × 容量充分性。低于门槛 → abstain。
         # 对抗场景"高置信度错误归因"的根治：存在性存活但归因不可靠时，
@@ -1058,7 +1213,8 @@ class Watermarker:
         # 否则与 CLI/find-meta 的防御存在路径依赖差（存档 UID 校验
         # 只发生在"持有 meta"的路径上）。
         if (watermarked and archived_uid is not None and uid is not None
-                and not self._uid_alias_match(uid, archived_uid, eff_bits)):
+                and not self._uid_alias_match(
+                    uid, archived_uid, eff_bits, evidence_mask)):
             attribution_abstain = True
             uid = None
             user = None
@@ -1068,8 +1224,11 @@ class Watermarker:
         # 信道 A 篡改判定
         tampered = None
         tampered_paras: List[int] = []
-        if seal is not None and session_salt is not None:
-            binder = DocumentBinder(eff_key, session_salt)
+        # v0.15：seal 验证不再硬依赖显式盐——检出信号（或显式盐）存在时
+        # 用胜出候选盐验证（派生盐找回路径下 seal 同样可验）；无盐且无
+        # 信号时保持 None（无从判定，不误报篡改）。
+        if seal is not None and (session_salt is not None or watermarked):
+            binder = DocumentBinder(eff_key, salt)
             verdict = binder.verify(text, seal)
             tampered = not verdict.ok
             tampered_paras = list(verdict.mismatched_indices)
@@ -1106,7 +1265,7 @@ class Watermarker:
             soft_uid=soft_uid,
             soft_gap=soft_gap,
             codec_mode=self._codec_mode if adaptive else "default",
-            bands=list(bands) if bands else [],
+            bands=list(eff_bands) if eff_bands else [],
             capacity=capacity,
             n_bits=eff_bits if adaptive else 0,
             active_bands=len(active),
@@ -1115,6 +1274,7 @@ class Watermarker:
             key_version=used_key_version,
             dict_version=codec.dict_version,
             dict_version_match=dict_version_match,
+            evidence_mask=evidence_mask,
         )
 
     def _compute_attribution_confidence(
@@ -1204,17 +1364,24 @@ class Watermarker:
 
     @staticmethod
     def _uid_alias_match(uid: Optional[int], archived_uid: Optional[Any],
-                         n_bits: int) -> bool:
-        """解码 UID 与 meta 存档 UID 是否一致（盐外证据，含自适应 k-bit 掩码对齐）。
+                         n_bits: int, active_mask: Optional[int] = None) -> bool:
+        """解码 UID 与 meta 存档 UID 是否一致（盐外证据，按证据掩码比对）。
 
-        语义与 cli._uid_alias_match 保持一致：相等，或按 n_bits 掩码
-        ``uid == (archived_uid & mask)`` 视为一致（自适应 k-bit 空间下
-        UID 实际编码在低 n_bits 位，解码值是该位空间内的值）。
+        v0.15：优先按 active_mask（有证据带的位掩码）比对——
+        ``(uid & mask) == (archived_uid & mask)``。无词带的默认 bit=0
+        是"无证据"而非"与存档矛盾"；旧严格相等把"无法验证"误读为
+        "失真"（单词典带缺失即整体弃权，该带恰好是 UID 置位带时
+        无攻击也必然弃权）。有证据带内不一致仍判失真（攻击防护
+        不受影响：翻转带词、删部分词都会留下矛盾证据）。
+
+        mask 为 None 时退回旧语义：相等，或按 n_bits 掩码
+        ``uid == (archived_uid & mask)`` 视为一致（自适应 k-bit 空间）。
 
         Args:
             uid: 解码出的 UID（None=未归因，无法比对）
             archived_uid: 嵌入时存档的 UID（meta 真值；可为 int 或数字串）
             n_bits: 编码位数（非自适应路径传 0 → 仅精确相等算一致）
+            active_mask: 有证据带的位掩码（None=退回 n_bits 语义）
         """
         if uid is None or archived_uid is None:
             return False
@@ -1222,6 +1389,8 @@ class Watermarker:
             auid = int(archived_uid)
         except (TypeError, ValueError):
             return False
+        if active_mask:
+            return (uid & active_mask) == (auid & active_mask)
         if uid == auid:
             return True
         mask = (1 << n_bits) - 1 if n_bits else None
@@ -1286,7 +1455,8 @@ class Watermarker:
 
         注意：存在性得分依赖 session_salt（绿名单派生自 salt）。
         - 有 salt：用原 salt 检测，精度高
-        - 无 salt：用随机盐，精度有限（适合 p0 已标定的场景做初筛）
+        - 无 salt：遍历 v0.15 派生候选盐（nonce 0..3 + head 变体），
+          取余量最大者（v0.15 前为随机一盐，meta 散失即漏检）
 
         Args:
             text: 嫌疑文本
@@ -1295,7 +1465,22 @@ class Watermarker:
         """
         lang = self._resolve_language(text, language)
         lang_tag = b"zh" if lang == "zh" else b"en"
-        salt = session_salt or generate_session_salt()
+        if session_salt is None:
+            # v0.15：无盐时遍历派生候选（meta 散失找回），取余量最大者
+            best_margin, found = -1.0, False
+            for cand in self._salt_candidates(text, self._master_key, lang_tag):
+                codec = self._build_codec(cand, lang_tag)
+                report = codec.detect(text)
+                threshold = self._compute_threshold(report.n_dict_words)
+                margin = (report.existence_score / threshold
+                          if threshold > 0 else 0.0)
+                if margin > best_margin:
+                    # 候选扫描施加多重比较校正（salt_scan_margin）
+                    best_margin, found = margin, (
+                        report.existence_score
+                        >= threshold * self._thresholds.salt_scan_margin)
+            return found
+        salt = session_salt
         codec = self._build_codec(salt, lang_tag)
         report = codec.detect(text)
         threshold = self._compute_threshold(report.n_dict_words)
@@ -1347,6 +1532,33 @@ class Watermarker:
         if self._default_language != "auto":
             return self._default_language
         return _detect_language(text)
+
+    def _canonical_text(self, text: str, lang_tag: bytes) -> str:
+        """嵌入不变规范化串（v0.15 派生盐绑定对象）。
+
+        用一个固定哑盐构建 codec（canonicalize 本身盐无关：只依赖
+        原始组归属映射），把组内词替换为组头——embed 前后 canonical
+        串一致，trace 才能从水印文本重算嵌入盐。
+        """
+        probe = self._build_codec(bytes(16), lang_tag)
+        return probe.canonicalize(text)
+
+    def _salt_candidates(self, text: str, key: bytes, lang_tag: bytes) -> List[bytes]:
+        """嫌疑文本 → 候选盐列表（v0.15 派生盐找回）。
+
+        embed 默认盐 = derive(key, canonical(text), nonce=0..5)（自检
+        换盐重试递增 nonce，max_attempts=6），meta 散失时 trace 按同
+        规则枚举（canonical 对嵌入变换不变，水印文本重算同一串）；
+        另附 canonical 前 512/128 字符的 head 派生——编辑攻击改了
+        组外内容但canonical 开头幸存时仍可命中。去重保序。salt 可
+        公开（绿/带映射仍需 master_key），枚举候选不构成密钥泄露。
+        """
+        from ..keys import derive_session_salt
+        canon = self._canonical_text(text, lang_tag)
+        cands = [derive_session_salt(key, canon, nonce=n) for n in range(6)]
+        cands.append(derive_session_salt(key, canon, nonce=0, head_chars=512))
+        cands.append(derive_session_salt(key, canon, nonce=0, head_chars=128))
+        return list(dict.fromkeys(cands))
 
     def _compute_threshold(self, n_dict_words: int) -> float:
         """根据词典命中数计算自适应存在性阈值。

@@ -38,6 +38,24 @@ from .synonym_data import (
 DEFAULT_N_BANDS = 16
 _UID_BITS = 16  # v0.5 固定 16-bit UID（与 N_BANDS 对齐）
 
+# min_n 语义常量：三处默认值不同是**有意的实验结论**，不是疏漏——
+# detect() 硬判决默认 2（单 distinct 词的带 z 恒为 ±1，噪声带）；
+# soft_match 默认 1（弱证据带 z 符号正确率 79%~100%，净贡献为正，
+# exp_soft_match 实测 30% 同组改写攻击下 min_n=1 匹配率 20→27/30）。
+DEFAULT_MIN_N = 2   # 硬判决/存在性统计：每带至少 2 个 distinct 词
+SOFT_MIN_N = 1      # 软判决注册库匹配：利用弱证据带
+
+# 每词每文档计票上限（v0.15 去相关修复）。green(w) 是 HMAC 确定性
+# 输出：同一词重复 N 次贡献 N 个完全相关的"样本"，而无界累加使 z 随
+# 重复线性增长（实测单词典词重复 160 次 Σ|z|=12.65，与真水印同量级，
+# 无水印模板文可轻易越阈并淹没真实 UID 证据——v0.15 前缺陷）。
+# 上限封顶后同一词最多贡献 PER_WORD_CAP 个相关票：正常文本（词频
+# ≤3 覆盖绝大多数命中）信号无损，重复攻击被压到 z≤~1.7/带
+# （同实测 160 次重复 Σ|z| 降至 3.46）。注意封顶票仍是相关样本，
+# z 的二项方差只是近似——部署阈值必须来自 null 语料经验标定
+# （calibrate_null_model），不要当严格假设检验用。
+PER_WORD_CAP = 3
+
 _EN_TOKEN_RE = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?")
 
 
@@ -327,6 +345,10 @@ class GreenlistCodec:
         for head, candidates in dictionary.items():
             for w in candidates:
                 word_owner.setdefault(w, head)
+        # 盐无关的原始组归属（不做可翻转组过滤）：embed 只在组内换词，
+        # 以本映射做 canonicalize 的文本对嵌入变换不变——v0.15 派生盐
+        # 绑定 canonical 文本，trace 才能从水印文本重算出同一盐
+        self._raw_word_owner: Dict[str, str] = dict(word_owner)
         disjoint: Dict[str, List[str]] = {}
         for w, head in word_owner.items():
             disjoint.setdefault(head, []).append(w)
@@ -369,6 +391,26 @@ class GreenlistCodec:
         return mac.digest()[0] % self.n_bands
 
     # ------------------------------------------------------------------
+    # 嵌入不变规范化（v0.15 派生盐绑定用）
+    # ------------------------------------------------------------------
+    def canonicalize(self, text: str) -> str:
+        """把组内词替换为组头的嵌入不变规范化文本。
+
+        embed 的全部变换（同义替换、大小写保持、跳过）都在组内进行，
+        因此 canonicalize(原文) == canonicalize(水印文本)——派生盐绑定
+        该串即可在 meta 散失时从嫌疑文本重算（trace 侧）。组外 token
+        （含阻断词、标点、非词典词）原样保留。
+
+        用的是盐无关的原始组归属（_raw_word_owner，未做可翻转组
+        过滤），与 codec 实例的盐无关。
+        """
+        parts = []
+        for raw, norm in self._tokenizer(text):
+            head = self._raw_word_owner.get(norm) if norm is not None else None
+            parts.append(head if head is not None else raw)
+        return "".join(parts)
+
+    # ------------------------------------------------------------------
     # 词典结构自检（测试用）
     # ------------------------------------------------------------------
     @property
@@ -390,27 +432,39 @@ class GreenlistCodec:
     # p0 标定（必修课 3）
     # ------------------------------------------------------------------
     def calibrate_p0(self, corpus: Sequence[str], *, pseudocount: float = 1.0) -> None:
-        """在无水印参考语料上估计逐带绿率 p0(b)。
+        """在无水印参考语料上估计逐带绿率 p0(b)（v0.15 封顶语义）。
 
-        对每个频带 b：统计语料中落在带 b 的词典词数 n_b 与绿词数 g_b，
+        v0.15 起与 detect() 统计口径一致：同一词在每篇文本内最多计
+        PER_WORD_CAP 次（封顶词频，防高频词支配 p0 估计）。
+
         p0(b) = (g_b + pseudocount) / (n_b + 2·pseudocount)
         （拉普拉斯平滑，避免小样本 0/1 极端值）。
         """
         counts: Dict[int, Tuple[int, int]] = {b: (0, 0) for b in range(self.n_bands)}
         for text in corpus:
+            per_text: Dict[str, int] = {}
             for _raw, norm in self._tokenizer(text):
                 if norm is None:
                     continue
                 b = self._w2band.get(norm)
-                if b is not None:
-                    n, g = counts[b]
-                    counts[b] = (n + 1, g + self.green(norm))
+                if b is None:
+                    continue
+                c = per_text.get(norm, 0)
+                if c >= PER_WORD_CAP:
+                    continue
+                per_text[norm] = c + 1
+                n, g = counts[b]
+                counts[b] = (n + 1, g + self.green(norm))
         for b, (n, g) in counts.items():
             if n > 0:
                 self._p0[b] = (g + pseudocount) / (n + 2.0 * pseudocount)
 
     def dict_word_counts(self, corpus: Sequence[str]) -> Dict[str, int]:
-        """统计语料中词典命中的归一化词频表（标定文件 p0_vocab 用）。
+        """统计语料中词典命中的封顶词频表（标定文件 p0_vocab 用）。
+
+        v0.15 起为**封顶词频**（每篇文本内同词最多计 PER_WORD_CAP 次），
+        与 detect() 计数口径一致；消费端 calibrate_p0_from_counts 按
+        count(w)·green(w) 加权重算 p0(b)。
 
         词频表是盐无关的：p0(b) = Σ count(w)·green(w) / Σ count(w)
         在任意盐下可由词频表精确重算（green 随盐变，词频不变）——
@@ -423,9 +477,15 @@ class GreenlistCodec:
         """
         counts: Dict[str, int] = {}
         for text in corpus:
+            per_text: Dict[str, int] = {}
             for _raw, norm in self._tokenizer(text):
-                if norm is not None and norm in self._all_words:
-                    counts[norm] = counts.get(norm, 0) + 1
+                if norm is None or norm not in self._all_words:
+                    continue
+                c = per_text.get(norm, 0)
+                if c >= PER_WORD_CAP:
+                    continue
+                per_text[norm] = c + 1
+                counts[norm] = counts.get(norm, 0) + 1
         return counts
 
     def calibrate_p0_from_counts(
@@ -477,11 +537,19 @@ class GreenlistCodec:
         *,
         bias: float = 1.0,
         rng: Optional[random.Random] = None,
+        choice_scorer: Optional[Callable[[str, str, str], float]] = None,
     ) -> str:
         """把 uid 写入文本：词典词以概率 bias 替换为组内颜色匹配候选。
 
         bias=1.0 时所有词典词都参与编码（实测 600 词 100% 往返）；
         bias<1.0 引入随机跳过，换取更低的分布偏移。
+
+        Args:
+            choice_scorer: 可选候选打分器 (prev_char, choice, next_char)
+                -> float，v0.15 新增。给出时候选按分数降序尝试（同分
+                保持 rng 随机序），替代纯随机选择——用语料搭配频率
+                选词，降低病句率（collocation.py 实测思路的代码化）。
+                None 保持旧随机行为。
         """
         if not (0.0 <= bias <= 1.0):
             raise ValueError("bias must be in [0, 1]")
@@ -507,8 +575,15 @@ class GreenlistCodec:
                 continue
             want = bool(bits[b])
             pool = [x for x in self._w2group[norm] if bool(self.green(x)) == want]
+            if choice_scorer is not None and pool:
+                # v0.15：搭配打分优先（降序，同分保持 rng 随机序稳定）
+                order = rng.sample(pool, len(pool))
+                order.sort(key=lambda x: choice_scorer(last_char, x, next_char),
+                           reverse=True)
+            else:
+                order = rng.sample(pool, len(pool))  # 随机序 + 边界稳定
             choice = None
-            for cand in rng.sample(pool, len(pool)):  # 随机序 + 边界稳定
+            for cand in order:
                 if self._boundary_safe(last_char, cand, next_char):
                     # 相邻重复抑制：候选与相邻词相同则跳过（同组孪生词
                     # 并列时"evidence and proof"→"proof and proof" 病句）
@@ -522,8 +597,13 @@ class GreenlistCodec:
                     last_char = raw[-1]
                     last_word = raw.lower()
                 continue
-            # 保留原文的大小写风格（首字母大写 -> 首字母大写；中文恒 False 无影响）
-            if raw[:1].isupper():
+            # 保留原文的大小写风格（v0.15 修复全大写退化：旧版无条件
+            # capitalize() 会把全大写 "SYSTEM" 改成 "System"——
+            # capitalize 会把候选余下字符强制转小写。全大写原文应
+            # 整体 upper；仅首字母大写才用 capitalize；中文无影响）
+            if raw.isupper():
+                choice = choice.upper()
+            elif raw[:1].isupper():
                 choice = choice.capitalize()
             out.append(choice)
             last_char = choice[-1]
@@ -533,38 +613,57 @@ class GreenlistCodec:
     # ------------------------------------------------------------------
     # 检测（逐带 z 检验 + UID 解码 + 存在性得分）
     # ------------------------------------------------------------------
-    def detect(self, text: str, *, min_n: int = 2) -> "BandReport":
-        """检测水印并解码 UID。
+    def detect(self, text: str, *, min_n: int = DEFAULT_MIN_N) -> "BandReport":
+        """检测水印并解码 UID（v0.15 封顶去相关统计）。
+
+        v0.15 统计口径：**每篇文本内同一 norm 词最多计 PER_WORD_CAP
+        次**。原因（v0.15 之前是已证实的缺陷）：green(w) 是 HMAC
+        确定性输出，同一词重复 N 次贡献 N 个完全相关的"样本"，而
+        z 检验的二项方差公式假设独立同分布——无界累加使 z 随重复
+        次数线性增长（实测单词典词重复 160 次 Σ|z| 达 12.65，与真
+        水印同量级，无水印模板文/表单信可轻易越过存在性阈值并
+        淹没真实 UID 证据）。封顶后重复攻击的带内 z 有界（同实测
+        Σ|z| 降至 3.46），正常文本（词频 ≤3）信号无损。嵌入端
+        embed() 仍按出现次数逐处替换（改写冗余不变），仅检测计票
+        封顶。
 
         Args:
             text: 嫌疑文本
-            min_n: 参与检测的最小带内词数（默认 2，过滤单词噪声带）。
-                设为 1 时弱证据带（n=1）也参与：其 z 符号正确率实测
-                79%~100%，净贡献为正，适合注册库软判决匹配
-                （见 soft_match）。
+            min_n: 参与检测的每带最小计票词数（默认
+                DEFAULT_MIN_N=2，过滤单词噪声带）。设为 1（SOFT_MIN_N）
+                时弱证据带也参与：其 z 符号正确率实测 79%~100%，
+                净贡献为正，适合注册库软判决匹配（见 soft_match）。
 
         Returns:
-            BandReport
+            BandReport（n_dict_words = 封顶计票总数）
         """
         n_per_band = [0] * self.n_bands
         g_per_band = [0] * self.n_bands
+        freq: Dict[str, int] = {}
         for _raw, norm in self._tokenizer(text):
             if norm is None:
                 continue
             b = self._w2band.get(norm)
-            if b is not None:
-                n_per_band[b] += 1
-                g_per_band[b] += self.green(norm)
+            if b is None:
+                continue
+            c = freq.get(norm, 0)
+            if c >= PER_WORD_CAP:
+                continue
+            freq[norm] = c + 1
+            n_per_band[b] += 1
+            g_per_band[b] += self.green(norm)
 
         z_per_band: List[float] = [0.0] * self.n_bands
         uid = 0
         existence = 0.0
         band_stats: List[BandStat] = []
+        active_mask = 0
         for b in range(self.n_bands):
             n, g = n_per_band[b], g_per_band[b]
             if n < min_n:
                 band_stats.append(BandStat(band=b, n=n, green=g, p0=self._p0_of(b), z=0.0, has_signal=False))
                 continue
+            active_mask |= 1 << b
             p0 = self._p0_of(b)
             var = p0 * (1.0 - p0) * n
             z = (g - p0 * n) / (var ** 0.5) if var > 0 else 0.0
@@ -579,6 +678,7 @@ class GreenlistCodec:
             existence_score=existence,
             bands=band_stats,
             n_dict_words=sum(n_per_band),
+            active_mask=active_mask,
         )
 
     def dot_score(self, text: str, uid: int) -> float:
@@ -621,7 +721,7 @@ class GreenlistCodec:
         text: str,
         candidates: Sequence[int],
         *,
-        min_n: int = 1,
+        min_n: int = SOFT_MIN_N,
         margin: float = 0.0,
         margin_ratio: Optional[float] = None,
     ) -> Tuple[Optional[int], float, float]:
@@ -638,7 +738,9 @@ class GreenlistCodec:
         Args:
             text: 嫌疑文本
             candidates: 候选 UID 列表（如注册库全部 UID）
-            min_n: 参与检测的最小带内词数（默认 1，利用弱证据带）
+            min_n: 参与检测的每带最小 distinct 词数（默认 SOFT_MIN_N=1，
+                利用弱证据带——与 detect 默认 2 不同是有意的实验结论，
+                见模块级常量注释）
             margin: 绝对置信阈值。最优与次优得分差 < margin 时 abstain
                 （返回 best_uid=None）。实测 margin=2.0 可把温和攻击下的
                 错误匹配全部转为 abstain（precision→100%）。
@@ -736,6 +838,7 @@ class GreenlistCodec:
         n_bits: Optional[int] = None,
         bias: float = 1.0,
         rng: Optional[random.Random] = None,
+        choice_scorer: Optional[Callable[[str, str, str], float]] = None,
     ) -> Tuple[str, List[int]]:
         """容量自适应嵌入。
 
@@ -752,7 +855,8 @@ class GreenlistCodec:
             raise ValueError(f"uid 0x{uid:X} 超出容量 {n_bits} bit（文档实际 {len(bands)} bit）")
         used = bands[:n_bits]
         full = self.map_uid(uid, used)
-        return self.embed(text, full, bias=bias, rng=rng), used
+        return self.embed(text, full, bias=bias, rng=rng,
+                          choice_scorer=choice_scorer), used
 
     def detect_adaptive(
         self,
@@ -855,6 +959,7 @@ class GreenlistCodec:
         n_bits: Optional[int] = None,
         bias: float = 1.0,
         rng: Optional[random.Random] = None,
+        choice_scorer: Optional[Callable[[str, str, str], float]] = None,
     ) -> Tuple[str, List[List[int]]]:
         """UID 冗余嵌入：同一位由 r 个交错带共同编码。
 
@@ -881,7 +986,8 @@ class GreenlistCodec:
             if (uid >> bit) & 1:
                 for b in bit_bands:
                     full |= 1 << b
-        return self.embed(text, full, bias=bias, rng=rng), layout
+        return self.embed(text, full, bias=bias, rng=rng,
+                          choice_scorer=choice_scorer), layout
 
     def detect_redundant(
         self,
@@ -962,14 +1068,22 @@ class BandReport:
     """信道 B 检测报告。
 
     Attributes:
-        uid: 解码出的 16-bit UID（n<2 的带贡献 0，即 bit=0）
+        uid: 解码出的 16-bit UID。**注意**：无信号带（n<min_n）的位
+            被默认填 0——这不是"该位确为 0"，而是"该位无证据"。
+            消费者应优先用 active_mask 屏蔽无证据位（masked_hamming /
+            soft_match 已内建该屏蔽），裸用 uid 做相等比较会把证据
+            缺失误读为位 0。
         existence_score: Σ|z_b| 存在性得分（对比无水印 null 分布，
             部署上推荐 UID 注册库匹配而非盲检，见 §13.3）
         bands: 逐带明细
-        n_dict_words: 文本命中的词典词总数
+        n_dict_words: 文本命中的封顶计票总数（v0.15 起同词每文档
+            最多计 PER_WORD_CAP 次）
+        active_mask: 有信号带的位掩码（bit b=1 表示带 b 有 ≥min_n
+            个 distinct 词）。v0.15 新增。
     """
 
     uid: int
     existence_score: float
     bands: List[BandStat] = field(default_factory=list)
     n_dict_words: int = 0
+    active_mask: int = 0

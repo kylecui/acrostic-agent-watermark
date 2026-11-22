@@ -79,3 +79,43 @@ def generate_master_key() -> bytes:
 def generate_session_salt() -> bytes:
     """生成会话盐（16 字节，可公开）。"""
     return os.urandom(16)
+
+
+def derive_session_salt(
+    master_key: bytes,
+    text: str,
+    *,
+    nonce: int = 0,
+    head_chars: Optional[int] = None,
+) -> bytes:
+    """从 master_key + 文本内容确定性派生会话盐（v0.15）。
+
+    v0.15 起 embed 不传 session_salt 时默认使用本函数（nonce=0），
+    盐与文本内容绑定：meta 存档散失时，trace 可从嫌疑文本重算盐
+    恢复溯源（不再依赖 meta_store 零失误）。重复嵌入同一文本得到
+    同一盐，行为可预期、可复现。
+
+    攻击/排版差异容忍：head_chars 给出时只用规范化文本的前 N 字符
+    派生——编辑攻击改了中段但开头幸存时仍可能命中（trace 的候选
+    盐列表会同时尝试全文派生与 head 派生，取信号最强者）。
+
+    Args:
+        master_key: agent 实例主密钥
+        text: 待绑定文本（嵌入时=原文，溯源时=嫌疑文本）
+        nonce: 重试序号（embed 自检换盐重试时递增 0..3）
+        head_chars: 只用前 N 个规范化字符（None=全文）
+
+    Returns:
+        16 字节会话盐
+    """
+    import unicodedata
+
+    norm = unicodedata.normalize("NFC", " ".join(text.split()))
+    if head_chars is not None:
+        norm = norm[:head_chars]
+    digest = hashlib.sha256(norm.encode("utf-8")).digest()
+    return hmac.new(
+        master_key,
+        b"aawm:v1:salt" + nonce.to_bytes(2, "big") + digest,
+        hashlib.sha256,
+    ).digest()[:16]

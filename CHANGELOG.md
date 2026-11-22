@@ -1,5 +1,73 @@
 # Changelog
 
+## 0.15.0 (2026-09-11)
+
+质量通行证：统计缺陷修复 + 溯源根基加固 + 验证叙事如实化。441 项测试通过（423 既有 + 18 新增）。
+
+### 安全/统计修复
+
+- **重复词去相关（PER_WORD_CAP=3）**：green(w) 是确定性函数，同一词重复
+  N 次贡献 N 个完全相关样本，而无界累加使 z 随 N 线性增长（实测单词典词
+  重复 160 次无水印文本 Σ|z|=12.65，与真水印同量级，可越阈并淹没真实
+  UID 证据）。detect/calibrate_p0/dict_word_counts 三处统一封顶为每词
+  每文档 3 票：攻击压到 Σ|z|≤3.46，正常文本（词频≤3）信号无损。
+  注意封顶票仍是相关样本，z 的二项方差只是近似——阈值必须来自 null
+  语料经验标定，勿当严格假设检验。
+- **跨域 FPR 实测**（docs/cross_domain_fpr_report.md）：null 模型是域
+  特定的。跨域标定 FPR 19–53%（比不标定更糟）；域内标定 FPR 0–7%、
+  TPR 70–100%。部署铁律：标定语料必须与待检测文本同域。
+- **候选盐扫描多重比较校正**：无 meta 盐候选扫描（k≈8 独立映射）在
+  默认模式 √n 阈值上乘 1.3（null 误报 4%→28% 的补偿）；自适应阈值
+  常数已是跨盐 null 包络，不重复校正。
+
+### 溯源根基
+
+- **派生盐找回**：embed 默认盐 = HMAC(主密钥, canonical(文本), nonce)，
+  canonical = 组内词替换为组头的嵌入不变规范化（embed 只在组内换词）。
+  meta 全部散失时 trace 从嫌疑文本重算盐（nonce 0..5 + head 512/128
+  候选，取得分/阈值余量最大者）恢复溯源。v0.14 及更早随机盐文档无
+  meta 仍不可恢复（限制不变）。
+- **证据掩码存档校验**：TraceResult.evidence_mask（与 uid 同位空间）。
+  置位带恰好无词典词时不再整体弃权（"无证据"≠"矛盾"——旧严格相等
+  在此场景无攻击也必然弃权）；有证据带内与存档 UID 矛盾仍弃权，攻击
+  防护不回退。
+- **UID 硬解码用 min_n=1 全带**：弱证据带（每带 1 票）在 bias=1 嵌入下
+  符号确定，min_n=2 丢弃它们会丢真 bit（capped 统计下 n=1 带更常见）。
+
+### API/行为变更（破坏性）
+
+- `DetectionThresholds.adaptive_intercept/slope` 默认值 1.0/1.6 →
+  0.7/1.35（封顶统计下重新拟合的 null 包络上方线）。
+- `TraceResult.confidence` 改为阈值相对归一化（阈值处=1/3，3×阈值=1），
+  退役 magic 常数 40（`confidence_scale` 字段保留但不再参与计算）。
+  语义标注为信号强度归一化，非统计概率。
+- `BandReport` 新增 `active_mask` 字段；`detect()` 的 n_dict_words 为
+  封顶计票总数（v0.14 为出现次数）。
+- `EmbedResult` 新增 `choice_scorer_used`。
+- `derive_session_salt()` 新增（keys.py）；`GreenlistCodec.canonicalize()`
+  新增；`embed/embed_adaptive/embed_redundant` 新增可选 `choice_scorer`。
+
+### 质量
+
+- **候选搭配打分**：calibrate_corpus 可用时中文路径按语料邻居兼容度
+  选词（embed_quality_report.md：zero_cost 组内选择被颜色约束锁死，
+  打分器对 default/hybrid 的 18.8k 多候选组生效）。
+- **嵌入质量量化**（docs/embed_quality_report.md）：替换率 34.5%、邻居
+  兼容率 79.1%（客观代理指标；PPL/盲评为后续工作，不冒充终判）。
+- 修复全大写原文被 capitalize 退化（"SYSTEM"→"System"）。
+- 修复 pytest 子集运行缺 src 路径（tests/conftest.py 统一注入）。
+- 修复 v0.2 解码测试固有 ~3%/次 flaky（固定密钥+盐向量，确定性全失败）。
+- min_n 语义常量化（DEFAULT_MIN_N/SOFT_MIN_N），三处默认值不同是有意
+  的实验结论，注释锁定。
+
+### 文档/治理
+
+- "七轮独立外部验证"改为如实表述：多轮自验证 + AI 工具辅助复核，
+  尚无第三方独立审计（docs/verification.md 新增）。
+- README 场景表补两个硬条件：域内标定、联合条件数字；注册库容量
+  上限明示（碰撞概率 (N−1)/2^k）。
+- CRC 表述修正："翻转检出 1/256→1/65536" → "随机错误的漏检概率"。
+
 ## 0.14.2 (2026-09-10)
 
 第 10 轮外部验证问题修复（GitHub issue #23）：soft 归因的"真值缺席"守门。

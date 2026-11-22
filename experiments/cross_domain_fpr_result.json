@@ -1,0 +1,122 @@
+{
+  "demo_in_domain": {
+    "uncalibrated": {
+      "fpr_existence": 0.1875,
+      "fpr_attribution": 0.0625,
+      "tpr": 0.8125,
+      "n": 16
+    },
+    "calibrated_xdomain": {
+      "fpr_existence": 0.1875,
+      "fpr_attribution": 0.0,
+      "tpr": 1.0,
+      "n": 16
+    },
+    "calibrated_matched": {
+      "fpr_existence": 0.375,
+      "fpr_attribution": 0.0,
+      "tpr": 1.0,
+      "n": 8
+    },
+    "scan_path": {
+      "fpr_existence": 0.25,
+      "n": 16
+    }
+  },
+  "en_literature": {
+    "uncalibrated": {
+      "fpr_existence": 0.0,
+      "fpr_attribution": 0.0,
+      "tpr": 0.0333,
+      "n": 120
+    },
+    "calibrated_xdomain": {
+      "fpr_existence": 0.3583,
+      "fpr_attribution": 0.0083,
+      "tpr": 0.9417,
+      "n": 120
+    },
+    "calibrated_matched": {
+      "fpr_existence": 0.0667,
+      "fpr_attribution": 0.0,
+      "tpr": 0.7,
+      "n": 60
+    },
+    "scan_path": {
+      "fpr_existence": 0.0,
+      "n": 40
+    }
+  },
+  "zh_literature": {
+    "uncalibrated": {
+      "fpr_existence": 0.025,
+      "fpr_attribution": 0.0083,
+      "tpr": 0.65,
+      "n": 120
+    },
+    "calibrated_xdomain": {
+      "fpr_existence": 0.525,
+      "fpr_attribution": 0.0333,
+      "tpr": 1.0,
+      "n": 120
+    },
+    "calibrated_matched": {
+      "fpr_existence": 0.0333,
+      "fpr_attribution": 0.0,
+      "tpr": 0.9667,
+      "n": 60
+    },
+    "scan_path": {
+      "fpr_existence": 0.05,
+      "n": 40
+    }
+  },
+  "short_fragments": {
+    "uncalibrated": {
+      "fpr_existence": 0.0179,
+      "fpr_attribution": 0.0,
+      "tpr": 0.1607,
+      "n": 56
+    },
+    "calibrated_xdomain": {
+      "fpr_existence": 0.0714,
+      "fpr_attribution": 0.0,
+      "tpr": 0.9464,
+      "n": 56
+    },
+    "calibrated_matched": {
+      "fpr_existence": 0.0,
+      "fpr_attribution": 0.0,
+      "tpr": 0.8929,
+      "n": 28
+    },
+    "scan_path": {
+      "fpr_existence": 0.025,
+      "n": 40
+    }
+  },
+  "repetitive_template": {
+    "uncalibrated": {
+      "fpr_existence": 0.7917,
+      "fpr_attribution": 0.2833,
+      "tpr": 1.0,
+      "n": 120
+    },
+    "calibrated_xdomain": {
+      "fpr_existence": 0.8167,
+      "fpr_attribution": 0.075,
+      "tpr": 1.0,
+      "n": 120
+    },
+    "calibrated_matched": {
+      "fpr_existence": 0.0,
+      "fpr_attribution": 0.0,
+      "tpr": 1.0,
+      "n": 60
+    },
+    "scan_path": {
+      "fpr_existence": 1.0,
+      "n": 40
+    }
+  }
+}
