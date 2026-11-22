@@ -22,10 +22,12 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 
-DEMO_DIR = "src/aawm/data/demo_corpus"
+_REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DEMO_DIR = os.path.join(_REPO_ROOT, "src", "aawm", "data", "demo_corpus")
 DEMO_GLOB = DEMO_DIR + "/*.md"
-EN_FILES = ["corpus/en/pg84.txt", "corpus/en/pg1342.txt", "corpus/en/pg2701.txt"]
-ZH_GLOB = "corpus/zh/*.txt"
+EN_FILES = [os.path.join(_REPO_ROOT, "corpus", "en", f)
+            for f in ("pg84.txt", "pg1342.txt", "pg2701.txt")]
+ZH_GLOB = os.path.join(_REPO_ROOT, "corpus", "zh", "*.txt")
 
 DEFAULT_SEED = 20260911
 
@@ -135,7 +137,8 @@ def make_domain_corpus(name: str, size: int, n: int,
 def _code_comment_chunks(size: int, n: int, seed: int) -> List[str]:
     import re
     comments = []
-    for f in glob.glob("src/aawm/**/*.py", recursive=True):
+    for f in glob.glob(os.path.join(_REPO_ROOT, "src", "aawm", "**", "*.py"),
+                       recursive=True):
         src = open(f, encoding="utf-8").read()
         comments += re.findall(r'"""([^"]{40,})"""', src)
         comments += re.findall(r"#\s(.{30,})", src)

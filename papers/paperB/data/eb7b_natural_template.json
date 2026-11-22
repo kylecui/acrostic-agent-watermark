@@ -1,0 +1,60 @@
+{
+  "experiment": "eb7b_natural_template",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "19f4cef",
+  "generated_at": "2026-11-22T14:11:21",
+  "config": {
+    "n_texts": 100,
+    "vary": [
+      0.5,
+      0.7,
+      0.9
+    ],
+    "prefilter": "unique-sentence < 0.5"
+  },
+  "results": {
+    "unique_ratio_buckets": {
+      "<0.5": {
+        "n": 14,
+        "uniq_mean": 0.47
+      },
+      "0.5-0.7": {
+        "n": 81,
+        "uniq_mean": 0.587
+      },
+      ">=0.7": {
+        "n": 5,
+        "uniq_mean": 0.76
+      }
+    },
+    "eval_pool_uniq_mean": 0.578,
+    "none": {
+      "mode": "none",
+      "n_passed": 50,
+      "n_skipped": 0,
+      "fpr_existence_passed": 0.3,
+      "fpr_attribution_passed": 0.0,
+      "reject_rate": 0.0,
+      "would_be_fp_skipped": 0
+    },
+    "calibrated": {
+      "mode": "calibrated",
+      "n_passed": 50,
+      "n_skipped": 0,
+      "fpr_existence_passed": 0.02,
+      "fpr_attribution_passed": 0.0,
+      "reject_rate": 0.0,
+      "would_be_fp_skipped": 0
+    },
+    "prefilter": {
+      "mode": "prefilter",
+      "n_passed": 44,
+      "n_skipped": 6,
+      "fpr_existence_passed": 0.0455,
+      "fpr_attribution_passed": 0.0,
+      "reject_rate": 0.12,
+      "would_be_fp_skipped": 0
+    }
+  }
+}

@@ -16,3 +16,14 @@
 - 论文 A 的启动阻塞仅剩"B 达 M2"一项，E-A1 语料生成可提前并行
 
 **教训**：环境假设必须实测，不得从旧文档继承。
+
+## D-2026-09-11-02：E-B5 阳性对照废弃与 N4 可复现性发现
+
+**事实**：PostMark 的 `NomicEmbed.__init__` 在每次进程内用
+`random.sample` 从 10 万词嵌入中抽 3266 词构造 embedding table
+（`models.py` L170-176），随机状态取决于 import 后、初始化前的
+random 消耗顺序。官方 artifact 的水印词表绑定他们进程内的表——
+跨环境无法逐位复现（本环境实测同批 text2 的 TPR@1%FPR 仅 0.27）。
+
+**处置**：E-B5 只主张 null 侧迁移结论（P1/P2），阳性对照标记
+invalid_env_mismatch；N4 作为论文的可复现性发现（§6 讨论）。

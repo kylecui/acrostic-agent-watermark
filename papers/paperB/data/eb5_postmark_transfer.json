@@ -1,0 +1,47 @@
+{
+  "experiment": "eb5_postmark_transfer",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "19f4cef",
+  "generated_at": "2026-11-22T14:05:31",
+  "config": {
+    "target": "PostMark @ 347f159",
+    "embedder": "nomic",
+    "ratio": 0.12,
+    "n_fit": 150,
+    "n_test": 200
+  },
+  "results": {
+    "matched_gutenberg": {
+      "threshold": 0.2727,
+      "fpr": 0.02,
+      "n": 200
+    },
+    "matched_c4": {
+      "threshold": 0.332,
+      "fpr": 0.0,
+      "n": 200
+    },
+    "cross_g2c4": {
+      "threshold": 0.2727,
+      "fpr": 0.05,
+      "n": 200
+    },
+    "cross_c42g": {
+      "threshold": 0.332,
+      "fpr": 0.005,
+      "n": 200
+    },
+    "template_vs_gthr": {
+      "threshold": 0.2727,
+      "fpr": 0.0,
+      "score_mean": 0.0,
+      "n": 200
+    },
+    "positive_control_c4": {
+      "status": "invalid_env_mismatch",
+      "reason": "N4: embedding table is a random per-init subset; official artifact word lists not reproducible cross-env",
+      "measured_tpr_at_1pct_fpr_env_specific": null
+    }
+  }
+}

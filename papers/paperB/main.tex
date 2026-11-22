@@ -1,0 +1,44 @@
+% !TeX program = pdflatex
+% AAWM Paper B — arXiv 格式骨架（I-3）
+% 编译: pdflatex main && bibtex main && pdflatex main ×2
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{microtype}
+\usepackage{xcolor}
+\newcommand{\zscore}{z}
+\title{Correlated Votes, Non-transferable Null Models, and the Template
+Attack:\ Pitfalls of Statistical Watermarks on Text}
+\author{Anonymous}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\emph{（M3 填写；骨架先占位：三个失效模式一句话 + 缓解一句话 +
+artifact 声明一句话。）}
+\end{abstract}
+
+\input{sections/intro}
+\input{sections/background}
+\input{sections/f1_correlated}
+\input{sections/f2_domains}
+\input{sections/f3_template}
+\input{sections/recommendations}
+\input{sections/related}
+\input{sections/limitations}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\appendix
+\input{sections/appendix}
+
+\end{document}
