@@ -251,3 +251,36 @@ class TestConfidenceSemantics:
         t = wm.trace(_demo_corpus_text())  # null
         assert not t.watermarked
         assert 0.0 <= t.confidence < 1.0 / 3.0
+
+
+class TestCalibrationGuards:
+    """v0.15.1 标定护栏（跨域 FPR 实测教训的工程化）。"""
+
+    def test_small_corpus_warns(self):
+        import warnings as warn_mod
+        wm = Watermarker(master_key=KEY, codec_mode="zero_cost")
+        with warn_mod.catch_warnings(record=True) as w:
+            warn_mod.simplefilter("always")
+            wm.calibrate_null_model([ZH_TEXT, ZH_TEXT[:200], ZH_TEXT[200:400]])
+        assert any("标定语料仅" in str(x.message) for x in w), \
+            "少于 10 篇标定语料必须告警"
+
+    def test_language_mismatch_warns(self):
+        import warnings as warn_mod
+        wm = Watermarker(master_key=KEY, codec_mode="zero_cost")
+        corpus = [ZH_TEXT * 20 for _ in range(12)]
+        with warn_mod.catch_warnings(record=True) as w:
+            warn_mod.simplefilter("always")
+            wm.calibrate_null_model(corpus)
+        assert any("零词典命中" in str(x.message) for x in w), \
+            "语料语言与 codec 语言不匹配必须告警"
+
+    def test_adequate_matched_corpus_silent_enough(self):
+        import warnings as warn_mod
+        wm = Watermarker(master_key=KEY, codec_mode="zero_cost")
+        corpus = [_demo_corpus_text()[i * 1500:(i + 1) * 1500]
+                  for i in range(12)]
+        with warn_mod.catch_warnings(record=True) as w:
+            warn_mod.simplefilter("always")
+            wm.calibrate_null_model(corpus)
+        assert not any("零词典命中" in str(x.message) for x in w)
