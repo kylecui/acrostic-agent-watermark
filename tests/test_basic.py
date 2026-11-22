@@ -209,7 +209,10 @@ class TestEmbedDecode:
         emb = Embedder(key)
         fails = 0
         for t in range(8):
-            r = emb.embed(SAMPLE_TEXT, user_id=42)
+            # v0.15.1 修复残留 flaky：embed 默认取随机盐，错误密钥下
+            # CRC-8 假通过 1/256/轮——改显式固定盐后确定性全失败
+            salt = bytes([t + 1]) * 16
+            r = emb.embed(SAMPLE_TEXT, user_id=42, session_salt=salt)
             wrong = derive_key(key, KeyContext(session_salt=bytes([t]) * 16, info=b"test"))
             d = Decoder(wrong).decode(r.watermarked_text, r.session_salt)
             if not d.success:
