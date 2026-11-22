@@ -81,7 +81,10 @@ def main() -> None:
         # 75 计分题(15 pair+40 spot+20 likert) + 3 练习题 = 78 组
         assert n_groups == 78, f"radio 组数 {n_groups} != 78"
 
-        evaluate(ws_url, 5, f"document.getElementById('pid').value='{args.pid}'")
+        # v2 自动派号: 读取服务端分配的 pid（字段只读），不再手填
+        assigned = evaluate(ws_url, 45, "document.getElementById('pid').value")
+        print(f"自动分配编号: {assigned}")
+        assert assigned and assigned.startswith("HE-"), "自动派号失败"
         clicked = evaluate(ws_url, 6, """(function(){
           const done=new Set();
           document.querySelectorAll('input[type=radio]').forEach(r=>{

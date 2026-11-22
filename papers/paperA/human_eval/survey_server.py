@@ -24,8 +24,30 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 RESP_DIR = os.path.join(ROOT, "responses")
 SURVEY = os.path.join(ROOT, "dist", "survey_HE.html")
 ADMIN_TOKEN = os.environ.get("HE_ADMIN_TOKEN", "dev-token-change-me")
-PID_RE = re.compile(r"^(HE-\d{3}|N-\d{3})$")
+PID_RE = re.compile(r"^(HE-\d{3,4}|N-\d{3,4})$")  # 自动派号 HE 可超 999
 MAX_BODY = 256 * 1024
+COUNTER_PATH = os.path.join(RESP_DIR, ".counter")
+import threading
+_COUNTER_LOCK = threading.Lock()
+
+
+def next_pid() -> str:
+    """原子递增派号：HE-001 起。计数器文件与 responses/ 同目录，
+    每次页加载取一个号（未提交造成跳号无害——分析侧按文件去重）。"""
+    os.makedirs(RESP_DIR, exist_ok=True)
+    with _COUNTER_LOCK:
+        n = 0
+        if os.path.exists(COUNTER_PATH):
+            try:
+                n = int(open(COUNTER_PATH, encoding="ascii").read().strip())
+            except Exception:
+                n = 0
+        n += 1
+        tmp = COUNTER_PATH + ".tmp"
+        with open(tmp, "w", encoding="ascii") as f:
+            f.write(str(n))
+        os.replace(tmp, COUNTER_PATH)
+    return f"HE-{n:03d}"
 
 
 def aggregate():
@@ -148,6 +170,9 @@ class H(BaseHTTPRequestHandler):
             if not os.path.exists(SURVEY):
                 return self._send(500, "survey_HE.html 缺失：先跑 paper_ea5b_build_survey.py")
             return self._send(200, open(SURVEY, encoding="utf-8").read())
+        if u.path == "/next-id":
+            return self._send(200, json.dumps({"pid": next_pid()}),
+                              "application/json; charset=utf-8")
         if u.path == "/admin":
             q = urllib.parse.parse_qs(u.query)
             if q.get("token", [""])[0] != ADMIN_TOKEN:

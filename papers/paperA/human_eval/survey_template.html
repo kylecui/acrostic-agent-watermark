@@ -20,7 +20,8 @@
 <p>本研究收集中文句子的自然度判断，结果仅以聚合统计形式用于学术研究，全程匿名。
 预计用时 <b>12–15 分钟</b>。请先填写参与者编号（由招募方发放，如 HE-001），
 不了解编号可填 N-自选三位数字。</p>
-<p>参与者编号：<input id="pid" placeholder="HE-001" style="font-size:15px;padding:4px 8px"></p>
+<p>参与者编号：<input id="pid" placeholder="HE-001" style="font-size:15px;padding:4px 8px">
+<span id="pid_note" style="font-size:13px;color:#555"></span></p>
 
 <h2>练习（3 题，不计分）</h2>
 <div id="practice"></div>
@@ -3836,8 +3837,27 @@ const PRACTICE = [
  {q:'spot', s:'这个这个方案不仅可行，而且成本很低很低。', correct:'yes', hint:'明显重复词'},
 ];
 
+async function assignPid(){
+  // 在线模式：服务端自动派号（HE-001 起），字段只读省分配;
+  // 取号失败（file:// 离线打开）退回手填 N-xxx。
+  const inp = document.getElementById('pid');
+  try{
+    const r = await fetch('next-id');
+    const j = await r.json();
+    if(r.ok && j.pid){
+      inp.value = j.pid; inp.readOnly = true;
+      document.getElementById('pid_note').textContent = '(已自动分配，无需填写)';
+      return;
+    }
+    throw 0;
+  }catch(e){
+    document.getElementById('pid_note').textContent = '(离线模式：请自填 N-三位数字，如 N-012)';
+  }
+}
+
 function render(){
   if(!POOL){document.body.innerHTML='<p style="color:red">研究者尚未注入题库：把 item_pool.json 粘贴到脚本 POOL 处。</p>';return}
+  assignPid();
   if(REVIEW){
     const b=document.createElement('p');
     b.style.cssText='background:#ffe9e9;border:1px solid #c99;padding:8px 12px;border-radius:6px';
@@ -3913,7 +3933,7 @@ function prCheck(i,ans){
 }
 async function exportResults(){
   const pidRaw=(document.getElementById('pid').value||'').trim();
-  if(!/^(HE-\d{3}|N-\d{3})$/.test(pidRaw)){alert('请先填写参与者编号（HE-三位数字 或 N-三位数字）');return;}
+  if(!/^(HE-\d{3,4}|N-\d{3,4})$/.test(pidRaw)){alert('编号格式不对：在线模式已自动分配；离线模式请填 N-三位数字');return;}
   results.pid=pidRaw;
   results.finished_at=new Date().toISOString();
   const payload=JSON.stringify(results);
