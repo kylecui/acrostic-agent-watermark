@@ -34,3 +34,5 @@ tmp_smoke/
 papers/third_party/PostMark/
 tmp_pytest/
 models/
+*.blg
+*.log

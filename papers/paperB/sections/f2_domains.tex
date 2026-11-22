@@ -86,3 +86,9 @@ per-text-adaptive statistic is measurably more domain-stable than the
 $z$-test family---but, as \S\ref{sec:f3} shows, the families also differ on
 the template attack. Pitfall severity is \emph{statistic-dependent}; our
 deployment checklist (\S\ref{sec:recs}) is written per statistic.
+An end-to-end rerun of PostMark's official embedding pipeline in our own
+environment (nomic word selection locally; the v2 insertion loop with a
+32B API inserter; $n{=}60$ C4 texts) restores the positive control that
+the cross-environment artifact mismatch (Appendix) had invalidated:
+TPR at 1\% FPR is 1.0, with presence rising from 0.10 (null) to 0.57 (watermarked). The null-side transfer measurements above therefore stand
+on a validated detector.
