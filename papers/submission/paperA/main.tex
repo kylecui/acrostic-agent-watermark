@@ -1,0 +1,56 @@
+% !TeX program = pdflatex
+% AAWM Paper A — arXiv 格式（I-3 同款骨架）
+\documentclass[11pt]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{amsfonts}
+\usepackage{amsmath}
+\usepackage{graphicx}
+\usepackage{microtype}
+\newcommand{\green}{\mathrm{green}}
+\title{AAWM: Agent-Level Watermarking for Black-Box LLM Outputs}
+\author{Yin Cui}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Model-level watermarks require access to LLM internals; cryptographic agent
+identity proves who an agent is but not which text it produced. We present
+AAWM, an agent-level watermark that operates entirely in the agent
+orchestration layer: any black-box LLM output can be watermarked post-hoc,
+and leaks can be traced to a specific user among 65,536. AAWM combines two
+channels---a Merkle-HMAC paragraph-binding channel for tamper evidence and
+a keyed greenlist statistical channel carrying a 16-bit user identifier via
+synonym choice---with a capacity-adaptive codec, a registry soft-matcher,
+and an abstain protocol that prefers ``unknown'' to a wrong attribution.
+Key-property measurements on 1,020 real LLM-generated deliverables
+(consulting reports, legal memos, research sections; Chinese and English)
+show: on unedited leaks both existence detection and user
+attribution succeed on 100\% of 100 real LLM deliverables (Chinese,
+1,270 characters median), embedding
+raises perplexity by 9.3\% on average (proxy metric), and---honestly---real
+LLM paraphrase at 15\% strength collapses both detection and attribution,
+defining a clear capability boundary. All artifacts, including derived-salt
+recovery after metadata loss, are open source.
+\end{abstract}
+
+\input{sections/intro}
+\input{sections/design}
+\input{sections/setup}
+\input{sections/robustness}
+\input{sections/quality}
+\input{sections/discussion}
+
+\bibliographystyle{plain}
+\bibliography{refs}
+
+\appendix
+\input{sections/appendix}
+
+\end{document}

@@ -1,0 +1,28 @@
+\section{Experimental Setup}
+\label{sec:setup}
+
+\paragraph{Corpus (E-A1).}
+Prior watermark evaluations often rely on synthetic or templated text,
+which inflates detection rates: AI-generated text is dictionary-dense in
+exactly the words watermark dictionaries cover. We instead generate
+\textbf{1,020 real LLM deliverables} with Qwen2.5-32B via an API provider:
+three genres (consulting report, legal memo, research survey section) in
+two languages (Chinese 510, median 1,270 characters; English 510, median
+3,738 characters), 24 seed topics, temperature 0.9, fixed generation seeds,
+total cost under 2 CNY (usage logged per call). Generation prompts are in
+the artifact.
+
+\paragraph{Configuration.}
+AAWM v0.15.0, zero-cost codec, bias 1.0, per-word vote cap 3, derived
+salts. Two calibration configurations: uncalibrated defaults, and in-domain
+calibration fitted on the first half of the corpus ($\ge$20 documents, per
+the domain-calibration requirement established in our companion pitfalls
+study). Tracing uses the explicit salt+bands metadata path; metadata-loss
+recovery is a design feature evaluated separately in the artifact.
+
+\paragraph{Metrics.}
+Existence TPR (watermarked verdict on marked text), attribution exactness
+(decoded user equals the embedding user), abstain rate, and under attack:
+survival of both metrics. Embedding quality is measured as perplexity
+change under a local Qwen2.5-3B (proxy metric; human evaluation is future
+work).

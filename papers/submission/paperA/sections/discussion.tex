@@ -1,0 +1,30 @@
+\section{Discussion, Boundaries, and Related Work}
+\label{sec:discussion}
+
+\paragraph{Comparison.}
+Against model-level watermarks (KGW and descendants; SynthID-Text), AAWM
+trades sampling-level control for black-box applicability and per-user
+attribution; against PostMark-class post-hoc watermarks, AAWM provides
+multi-user uid decoding (16 bits with registry matching and abstention)
+where presence-ratio schemes carry essentially one bit of existence;
+against cryptographic agent identity, AAWM marks the text itself rather
+than the agent's credentials. The honest price of uid capacity is
+exposure to the pitfalls we characterize in the companion paper:
+correlated-vote inflation (mitigated by per-word caps), domain-specific
+null models (mitigated by in-domain calibration), and template-class
+adversarial texts (mitigated by repetition routing)---all three mitigations
+are shipped in v0.15.0.
+
+\paragraph{Boundaries.}
+(1)~Semantic LLM rewriting destroys the mark (Table~\ref{tab:ea2}).
+(2)~The English zero-cost dictionary is sparse on non-AI text; production
+English deployments should use the full-lexicon codec.
+(3)~Legal-grade attribution is out of scope: the mark is statistical, not
+cryptographic evidence.
+(4)~A symmetric master key means verifier compromise is total; key
+management is an operational precondition.
+
+\paragraph{Artifact.}
+AAWM is open source (MIT core) at v0.15.0: Python SDK, CLI, HTTP service,
+five framework adapters, fail-open middleware, key rotation, audit
+logging, and the full experiment suite of this paper with fixed seeds.

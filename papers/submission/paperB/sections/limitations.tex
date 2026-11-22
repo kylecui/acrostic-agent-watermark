@@ -1,0 +1,20 @@
+\section{Limitations and Ethics}
+
+\paragraph{Scope.}
+Our measurements use one host system (AAWM v0.15.0) end-to-end; generality
+is supported by an independent reference implementation (Finding~1) and the
+official PostMark implementation (Findings~2--3), but we do not claim
+coverage of all watermark statistics. The cap value $c{=}3$ is validated
+for the tested codec/dictionary configuration only. PostMark measurements
+are null-side (existence/transfer); its embedding-pipeline reproduction was
+invalidated by environment-level table nondeterminism and is reported as a
+finding rather than silently dropped. Our corpora are public-domain texts
+and constructed templates; a production audit should repeat the matrix on
+in-house domains.
+
+\paragraph{Ethics.}
+Watermarks attribute documents to users; the same mechanism can trace
+journalists' sources or whistleblowers. We support the position that
+deployment-level watermarking of user-facing documents should be disclosed,
+and that abstain-capable protocols with published failure modes---like the
+ones characterized here---are preferable to silent ones.

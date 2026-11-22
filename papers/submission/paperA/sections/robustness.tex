@@ -1,0 +1,70 @@
+\section{Detection and Attribution on Real LLM Deliverables}
+\label{sec:robustness}
+
+\subsection{Unedited leaks: the operating point}
+Table~\ref{tab:ea0} gives the no-attack round trip on 100 held-out Chinese
+deliverables with a single-user registry (uid 7): existence and attribution
+are both 100\%, calibrated and uncalibrated. Real LLM deliverables sit
+comfortably inside the watermark's capability window---their function-word
+and connector vocabulary (``not only\ldots but also'', ``therefore'',
+``should'') is precisely what zero-cost dictionaries cover.
+
+\begin{table}[t]
+\centering\small
+\caption{E-A0: unedited-leak round trip on 100 real LLM Chinese
+deliverables (zero-cost codec, explicit metadata path).}
+\label{tab:ea0}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Configuration & Existence TPR & Attribution exact & $n$ \\
+\midrule
+Uncalibrated defaults & 1.00 & 1.00 & 100 \\
+In-domain calibrated & 1.00 & 1.00 & 100 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Real LLM paraphrase: the capability boundary}
+We attack the marked texts with the same 32B LLM at three rewrite strengths
+(``replace $\sim$15\%/30\%/50\% of content words, keep meaning and
+length''; $n{=}50$ per strength, calibrated and uncalibrated).
+Table~\ref{tab:ea2} shows the outcome: at 15\% rewrite strength, existence
+TPR is 2\% and attribution is zero; at 30\% and 50\%, both are zero
+everywhere. Real LLM paraphrase is far more destructive than the synthetic
+within-group synonym attacks used in prior robustness reports, because the
+rewriter varies exactly the connector and function words that carry the
+mark, not just content words.
+
+\begin{table}[t]
+\centering\small
+\caption{E-A2: survival under real LLM paraphrase (Qwen2.5-32B rewriter,
+$n{=}50$ per cell; zero-cost Chinese codec). This is a capability boundary,
+not a robustness table: semantic rewriting defeats lexical watermarks.}
+\label{tab:ea2}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Rewrite strength & Existence TPR & Attribution & Abstain \\
+\midrule
+15\% & 0.02 & 0.00 & 0.00 \\
+30\% & 0.00 & 0.00 & 0.00 \\
+50\% & 0.00 & 0.00 & 0.00 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+A retest with the full-lexicon (default) dictionary---denser coverage,
+larger textual disturbance---marginally improves existence survival at
+15\% rewrite (TPR 0.10 vs.\ 0.02) but attribution remains zero at every
+strength ($n{=}30$ per cell): more votes delay the existence verdict's
+death, they do not save the uid. Robustness to semantic rewriting is not a
+dictionary-size problem.
+
+We therefore state the capability window plainly: AAWM traces
+\emph{unedited or structurally edited} leaks (insertions, deletions,
+reorderings, excerpting survive by design through content-addressed
+voting). Against an attacker who semantically rewrites the leaked document
+with an LLM, no lexical watermark survives; detection of the mark's
+remains is a research problem, and the abstain protocol's honest output is
+``watermark destroyed''. Deployments that expect rewrite attacks should
+combine watermarking with traditional forensics rather than rely on any
+lexical scheme.

@@ -1,0 +1,79 @@
+\section{Finding 1: Correlated Votes}
+\label{sec:f1}
+
+\subsection{The attack}
+\label{sec:f1-attack}
+Because $g_K$ is deterministic, every occurrence of a word $w$ contributes
+the \emph{same} bit $g_K(w)$. The binomial variance term
+$\sqrt{p_0(1-p_0)n_b}$ treats the $n_b$ votes as independent draws; they
+are not. Concretely, we take an unwatermarked text consisting of one
+sentence frame repeated with a single in-dictionary word $w$ ($N \in
+\{1,10,40,160,640\}$ repetitions) and measure the existence score of the
+unmodified AAWM detector (pre-fix behavior, occurrence counting) and the
+capped v0.15 detector (3 votes per word per document).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_eb1_correlated_votes.pdf}
+\caption{E-B1: existence score of an \emph{unwatermarked} text repeating one
+dictionary word $N$ times. Uncapped counting (v0.14 behavior) grows without
+bound and crosses the default threshold at $N{=}160$; capping at 3 votes
+pins the score at 1.73 (22\% of threshold).}
+\label{fig:eb1}
+\end{figure}
+
+The uncapped score grows exactly as the correlation analysis predicts
+(Figure~\ref{fig:eb1}): 1.0, 3.16, 6.32, 12.65, 25.30 for $N$ = 1, 10, 40,
+160, 640---linear in $\sqrt{N}$, crossing the default threshold
+$\max(8, 2\sqrt{n})$ already at $N{=}160$. Such texts are not exotic: form
+letters, templated reports, and review-generation pipelines all contain
+high-repetition dictionary words. Beyond false existence verdicts, inflated
+$|z_b|$ values swamp genuine UID evidence in registry matching, enabling
+false attribution (quantified in \S\ref{sec:f3}).
+
+\subsection{Mitigation and its trade-off}
+Capping per-word votes at $c$ bounds a single repeated word's contribution
+to $|z_b| \le \sqrt{c \cdot p_0/(1-p_0)}$; at $p_0{=}0.5$, $c{=}3$ bounds it
+to $\le 1.73$. The cap is not free: it also removes legitimate repeat
+evidence. We sweep $c \in \{1,2,3,5,\infty\}$ on in-domain text (2500-char
+chunks of the deployment corpus, zero-cost Chinese dictionary, uncalibrated
+default thresholds; 8 salts $\times$ 5 documents for the separation curves;
+20 chunks for operating rates).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_eb2_cap_tradeoff.pdf}
+\caption{E-B2: (a) null p95 vs.\ marked minimum existence score per active
+band; (b) operating TPR/FPR. $c{=}3$ is the only setting with zero FPR and
+the highest TPR; $c{\ge}5$ lets the repetition class back in (FPR 18.8--31\%).}
+\label{fig:eb2}
+\end{figure}
+
+Figure~\ref{fig:eb2} shows the result: $c{=}1$ is over-strict (TPR 0\%),
+$c{=}3$ dominates (TPR 62.5\%, FPR 0\%), and $c{\ge}5$ re-opens the FPR
+(18.8--31.2\%) because natural texts' frequent words again dominate band
+counts. The right cap is therefore a \emph{security parameter}, not an
+optimization knob; it must be re-derived when the dictionary or language
+changes (we scope this claim to the tested configuration; see
+Appendix~\ref{app:config}).
+
+\subsection{Generality: an independent implementation}
+To check that Finding 1 is a property of the statistic rather than of AAWM,
+we implemented an 80-line watermark of the same class from scratch (HMAC
+word color, occurrence counting, single-bin $z$-score; no shared code with
+AAWM) and ran the identical construction.
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_eb4_reference_impl.pdf}
+\caption{E-B4: the same attack on an independent reference implementation.
+$|z|$ follows the identical curve (25.3 at $N{=}640$); at $N{=}10$ the score
+already crosses $z{=}3$.}
+\label{fig:eb4}
+\end{figure}
+
+Figure~\ref{fig:eb4} shows the identical growth curve; with a single global
+statistic the attack is \emph{more} damaging ($N{=}10$ already crosses
+$|z|{=}3$). Any scheme that (i) derives a deterministic per-word label from
+a key and (ii) accumulates occurrence counts into an independence-assuming
+$z$-test is vulnerable; the cap transfers to such schemes unchanged.

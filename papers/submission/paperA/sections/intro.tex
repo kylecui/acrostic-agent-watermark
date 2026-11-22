@@ -1,0 +1,42 @@
+\section{Introduction}
+When a confidential LLM-produced deliverable leaks, only two
+attribution technologies are available, and each leaves a gap. \emph{Model-level watermarks}
+(KGW-style greenlists, tournament sampling) bind the mark to the LLM's
+sampling process: they require logits or a modified generator, so they
+cannot mark output from closed APIs, and they prove ``this text came from
+model $M$''---not \emph{which user} received it. \emph{Cryptographic agent
+identity} (signed agent cards, DID-based IDs) proves who an agent is, but a
+signature on the agent is not a mark on the text: anyone can copy the text
+and strip the signature.
+
+We present \textbf{AAWM}, an \emph{agent-level} watermark that closes this
+gap. The agent rewrites its own output post-hoc, choosing synonyms according
+to a key derived from the agent instance's master key; a verifier with the
+same key reads the mark out of the text like an acrostic---including
+\emph{which of up to 65,536 users} received this copy. The LLM is a pure
+black box; nothing about the model or the API changes.
+
+\paragraph{Contributions.}
+\begin{itemize}
+\item \textbf{Agent-level positioning} with a concrete threat model
+(\S\ref{sec:design}): the watermark lives in the orchestration layer, works
+with any black-box LLM, and binds output to agent-instance and user.
+\item \textbf{Dual-channel design}: a Merkle-HMAC paragraph-binding channel
+(tamper evidence, localization) plus a keyed-greenlist statistical channel
+carrying a capacity-adaptive 16-bit user identifier with redundancy
+layouts and registry soft-matching (\S\ref{sec:design}).
+\item \textbf{An abstain protocol} that outputs ``unknown'' rather than a
+wrong user when attribution confidence is insufficient, with an evidence
+mask that distinguishes ``no evidence'' from ``contradicting evidence''
+(\S\ref{sec:design}).
+\item \textbf{Operational resilience}: session salts are derived from the
+master key and the embedding-invariant canonicalization of the text, so
+tracing survives total metadata loss (\S\ref{sec:design}).
+\item \textbf{Evaluation on real LLM deliverables}---1,020 documents from a
+32B LLM across three genres in two languages---with honest boundaries:
+100\% detection and exact attribution on unedited leaks
+($n{=}100$), $+9.3\%$ perplexity (proxy) embedding cost, and complete
+collapse under 15\%-strength LLM paraphrase, which we report as a
+capability boundary rather than hide (\S\ref{sec:robustness},
+\S\ref{sec:quality}).
+\end{itemize}
