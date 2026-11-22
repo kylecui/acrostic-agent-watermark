@@ -31,7 +31,6 @@ tmp_install/
 tmp_smoke/
 
 .env
-.env
 papers/third_party/PostMark/
 tmp_pytest/
 models/
