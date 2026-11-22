@@ -32,3 +32,7 @@ tmp_smoke/
 
 .env
 .env
+tmp_pytest/
+models/
+.venv/
+papers/third_party/PostMark/
