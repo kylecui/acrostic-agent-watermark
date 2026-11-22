@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>中文文本质量研究（匿名）</title>
+<style>
+ body{font-family:system-ui,"Microsoft YaHei",sans-serif;max-width:720px;margin:24px auto;padding:0 16px;line-height:1.7;color:#222}
+ h1{font-size:20px} h2{font-size:16px;border-top:1px solid #ddd;padding-top:16px}
+ .sent{background:#f7f7f7;border:1px solid #e0e0e0;border-radius:6px;padding:10px 14px;margin:8px 0}
+ button{font-size:15px;padding:8px 18px;margin:4px;cursor:pointer}
+ label{display:block;margin:6px 0;cursor:pointer}
+ .likert label{display:inline-block;margin-right:14px}
+ .conf{margin-top:6px;font-size:13px;color:#555}
+ textarea{width:100%;height:140px;font-family:monospace;font-size:12px}
+ .done{background:#eefbe9;border:1px solid #9c9;padding:12px;border-radius:6px}
+</style>
+</head>
+<body>
+<h1>中文文本质量研究</h1>
+<p>本研究收集中文句子的自然度判断，结果仅以聚合统计形式用于学术研究，全程匿名。
+预计用时 <b>12–15 分钟</b>。请先填写参与者编号（由招募方发放，如 HE-001），
+不了解编号可填 N-自选三位数字。</p>
+<p>参与者编号：<input id="pid" placeholder="HE-001" style="font-size:15px;padding:4px 8px"></p>
+
+<h2>练习（3 题，不计分）</h2>
+<div id="practice"></div>
+
+<h2>第一部分：二选一（15 题）</h2>
+<p>每题给出两个意思相同的句子版本，请选<b>读起来更自然</b>的一个。凭直觉即可，不要反复推敲。</p>
+<div id="pairs"></div>
+
+<h2>第二部分：改动探测（40 题）</h2>
+<p>每题<b>单独一个句子</b>。请判断它是否被人为改动过（换词、改写），并给出置信度。
+这些句子多数<b>没有</b>被改动——只有约一半有。请基于语感判断，不知道可以选"不确定"。</p>
+<div id="spots"></div>
+
+<h2>第三部分：自然度评分（20 题）</h2>
+<p>给每个句子的自然程度打分：1=很不自然（明显病句），5=完全自然。</p>
+<div id="likerts"></div>
+
+<h2>提交</h2>
+<p>完成后点击导出，把下载的 JSON 文件或文本发给招募方。</p>
+<button onclick="exportResults()">导出结果</button>
+<div id="out"></div>
+
+<script>
+// ============ 配置：研究者把 item_pool.json 内容粘贴到 POOL ============
+const POOL = /*PASTE_ITEM_POOL_JSON_HERE*/ null;
+
+const rng = mulberry32(hashStr(document.getElementById('pid').value || 'anon'));
+let results = {pid:null, started_at:new Date().toISOString(), pairs:{}, spots:{}, likerts:{}};
+
+function hashStr(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return h}
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
+function shuffle(arr,r){const a=arr.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
+
+// 练习项：含 2 个明显病句，确保参与者理解题意
+const PRACTICE = [
+ {q:'pair', a:'我们不但要完成任务，而且要保证质量。', b:'我们不但要完成任务，但是要保证质量。', hint:'b 关联词搭配不当'},
+ {q:'spot', s:'这个方案不仅可行，而且成本很低。', answer:'no'},
+ {q:'spot', s:'这个这个方案不仅可行，而且成本很低很低。', answer:'yes', hint:'明显重复词'},
+];
+
+function render(){
+  if(!POOL){document.body.innerHTML='<p style="color:red">研究者尚未注入题库：把 item_pool.json 粘贴到脚本 POOL 处。</p>';return}
+  const p = document.getElementById('practice');
+  PRACTICE.forEach((it,i)=>{
+    const d=document.createElement('div');d.className='sent';
+    if(it.q==='pair'){
+      d.innerHTML=`练习${i+1}：<br>A：${it.a}<br>B：${it.b}<br>
+      <label><input type="radio" name="pr${i}" onclick="prCheck(${i},'A')"> A 更自然</label>
+      <label><input type="radio" name="pr${i}" onclick="prCheck(${i},'B')"> B 更自然</label>
+      <div class="conf" id="prf${i}"></div>`;
+    }else{
+      d.innerHTML=`练习${i+1}：<br>「${it.s}」<br>
+      <label><input type="radio" name="pr${i}" onclick="prCheck(${i},'no')"> 未被改动</label>
+      <label><input type="radio" name="pr${i}" onclick="prCheck(${i},'yes')"> 被人为改动</label>
+      <div class="conf" id="prf${i}"></div>`;
+    }
+    p.appendChild(d);
+  });
+
+  const order = shuffle(POOL.pair_items.map((x,i)=>i), rng);
+  const pe = document.getElementById('pairs');
+  order.forEach((idx,k)=>{
+    const it=POOL.pair_items[idx]; const swap=rng()<0.5;
+    const first=swap?it.marked:it.orig, second=swap?it.orig:it.marked;
+    const d=document.createElement('div');d.className='sent';
+    d.innerHTML=`${k+1}.<br>A：${first}<br>B：${second}<br>
+      <label><input type="radio" name="pa${idx}" value="A" onclick="results.pairs[${idx}]={c:'A',m:'${swap?'B':'A'}'}"> A 更自然</label>
+      <label><input type="radio" name="pa${idx}" value="B" onclick="results.pairs[${idx}]={c:'B',m:'${swap?'B':'A'}'}"> B 更自然</label>`;
+    pe.appendChild(d);
+  });
+
+  const spots = shuffle(
+    POOL.spot_marked.map(x=>({...x,type:'marked'}))
+    .concat(POOL.spot_orig.map(x=>({...x,type:'orig'}))), rng);
+  const se = document.getElementById('spots');
+  spots.forEach((it,k)=>{
+    const shown = it.type==='marked'?it.marked:it.orig;
+    const id = it.type==='marked'?POOL.spot_marked.indexOf(it):'o'+POOL.spot_orig.indexOf(it);
+    const d=document.createElement('div');d.className='sent';
+    d.innerHTML=`${k+1}. 「${shown}」<br>
+      <label><input type="radio" name="sp${id}" value="yes" onclick="results.spots['${id}']={a:'yes'}"> 被人为改动</label>
+      <label><input type="radio" name="sp${id}" value="no" onclick="results.spots['${id}']={a:'no'}"> 未被改动</label>
+      <span class="conf">置信度：<select onchange="results.spots['${id}'].c=this.value">
+        <option value="">—</option><option value="1">1 猜的</option><option value="2">2 倾向</option>
+        <option value="3">3 较确定</option><option value="4">4 很确定</option></select></span>`;
+    se.appendChild(d);
+  });
+
+  const le = document.getElementById('likerts');
+  shuffle(POOL.likert_items.map((x,i)=>i), rng).forEach((idx,k)=>{
+    const it=POOL.likert_items[idx];
+    const d=document.createElement('div');d.className='sent';
+    d.innerHTML=`${k+1}. 「${it.marked}」<br><span class="likert">
+      ${[1,2,3,4,5].map(v=>`<label><input type="radio" name="lk${idx}" value="${v}" onclick="results.likerts[${idx}]=${v}"> ${v}</label>`).join('')}
+      </span>`;
+    le.appendChild(d);
+  });
+}
+function prCheck(i,ans){
+  const it=PRACTICE[i]; const ok=(it.q==='pair')?(ans=== (it.hint.startsWith('b')?'B':'A')):(ans===it.answer);
+  document.getElementById('prf'+i).innerHTML = ok?'✓ 正确' : `✗ 再想想（提示：${it.hint||''}）`;
+}
+function exportResults(){
+  results.pid=document.getElementById('pid').value||'anon';
+  results.finished_at=new Date().toISOString();
+  const blob=new Blob([JSON.stringify(results,null,1)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`human_eval_${results.pid}.json`;a.click();
+  const o=document.getElementById('out');o.className='done';
+  o.innerHTML='<p>已导出。若下载失败，复制下面文本发给招募方：</p>';
+  const t=document.createElement('textarea');t.value=JSON.stringify(results);o.appendChild(t);
+}
+render();
+</script>
+</body>
+</html>

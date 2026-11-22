@@ -35,3 +35,4 @@ papers/third_party/PostMark/
 tmp_pytest/
 models/
 *.blg
+papers/paperA/human_eval/responses/
