@@ -2,14 +2,14 @@
 \label{sec:discussion}
 
 \paragraph{Comparison.}
-Against model-level watermarks (KGW and descendants; SynthID-Text), AAWM
+Against model-level watermarks (KGW \cite{kgw} and descendants; SynthID-Text \cite{synthid}), AAWM
 trades sampling-level control for black-box applicability and per-user
-attribution; against PostMark-class post-hoc watermarks, AAWM provides
+attribution; against PostMark-class post-hoc watermarks \cite{postmark}, AAWM provides
 multi-user uid decoding (16 bits with registry matching and abstention)
-where presence-ratio schemes carry essentially one bit of existence;
-against cryptographic agent identity, AAWM marks the text itself rather
+where presence-ratio schemes \cite{postmark,simmark} carry essentially one bit of existence;
+against cryptographic agent identity \cite{agentpin}, AAWM marks the text itself rather
 than the agent's credentials. The honest price of uid capacity is
-exposure to the pitfalls we characterize in the companion paper:
+exposure to the pitfalls we characterize in the companion paper \cite{aawm}:
 correlated-vote inflation (mitigated by per-word caps), domain-specific
 null models (mitigated by in-domain calibration), and template-class
 adversarial texts (mitigated by repetition routing)---all three mitigations

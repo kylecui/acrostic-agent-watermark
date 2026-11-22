@@ -1,3 +1,45 @@
-\begin{thebibliography}{}
+\begin{thebibliography}{1}
+
+\bibitem{simmark}
+Anonymous.
+\newblock Simmark: Watermarking via inter-sentence embedding similarity.
+\newblock {\em arXiv}, 2025.
+
+\bibitem{postmark}
+Yapei Chang, Beidi Krause, and Robin Jia.
+\newblock Postmark: A robust blackbox watermark for large language models.
+\newblock In {\em EMNLP}, 2024.
+
+\bibitem{aawm}
+Yin Cui.
+\newblock Aawm: Agent-level watermarking for llm agent outputs.
+\newblock 2026.
+\newblock Open-source artifact, v0.15.0.
+
+\bibitem{synthid}
+Suman Dathathri, Abhay See, Sayna Koupaee, et~al.
+\newblock Scalable watermarking for identifying large language model outputs.
+\newblock {\em Nature}, 2024.
+
+\bibitem{kgw}
+Johannes Kirchenbauer, Jonas Geiping, Yuxin Wen, Jonas Scheffer, Manli Shu, and
+  Tom Goldstein.
+\newblock A watermark for large language models.
+\newblock {\em ICML}, 2023.
+
+\bibitem{agentpin}
+{ThirdKey Research}.
+\newblock Introducing agentpin: Cryptographic identity for ai agents.
+\newblock \url{https://research.thirdkey.ai/blog/introducing-agentpin}, 2026.
+
+\bibitem{topkara2006}
+Mercan Topkara, Giuseppe Riccardi, Umut Topkara, and Ambrish Jaiswal.
+\newblock Hiding information in text through lexical ambiguity.
+\newblock In {\em NLP-KE}, 2006.
+
+\bibitem{wang2009}
+王晓龙.
+\newblock 基于统计特征的中文文本零水印算法.
+\newblock {\em 计算机学报}, 2009.
 
 \end{thebibliography}

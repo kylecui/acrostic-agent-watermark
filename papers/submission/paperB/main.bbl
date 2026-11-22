@@ -1,5 +1,10 @@
 \begin{thebibliography}{1}
 
+\bibitem{simmark}
+Anonymous.
+\newblock Simmark: Watermarking via inter-sentence embedding similarity.
+\newblock {\em arXiv}, 2025.
+
 \bibitem{postmark}
 Yapei Chang, Beidi Krause, and Robin Jia.
 \newblock Postmark: A robust blackbox watermark for large language models.

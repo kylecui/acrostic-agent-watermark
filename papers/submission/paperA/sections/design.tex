@@ -1,6 +1,15 @@
 \section{System Design}
 \label{sec:design}
 
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_architecture.pdf}
+\caption{AAWM architecture: the watermark is applied in the agent orchestration
+layer after the black-box LLM; the verifier reproduces the keyed statistics
+from suspect text, with metadata (solid) or derived-salt recovery (dashed).}
+\label{fig:arch}
+\end{figure}
+
 \subsection{Threat model and positioning}
 The embedding party is an agent platform that serves many users from one
 or more black-box LLMs. The verifying party is an auditor holding the same
@@ -14,7 +23,7 @@ typically reposted unedited or with structural edits.
 Let $K$ be the master key and $s$ a session salt. A word predicate
 $\green_K(w)$ (top bit of $\mathrm{HMAC}(K_{\green}, w)$) and a band map
 $b_K(w)$ (mod 16) are derived per salt. A curated synonym dictionary
-(136 zero-cost Chinese groups; 133 English groups) partitions into bands;
+(136 zero-cost Chinese groups; 133 English groups; lineage in \cite{topkara2006,wang2009}) partitions into bands;
 groups whose members are monochromatic under the keyed predicate are
 dropped per salt. A 16-bit user id is encoded as band target colors; the
 embedder rewrites every dictionary-word occurrence toward its band's target
