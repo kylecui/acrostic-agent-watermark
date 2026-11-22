@@ -1,1 +1,77 @@
-% intro — 待写（见 outline.md 对应节）
+\section{Introduction}
+Statistical watermarks over text are being deployed to attribute leaked
+documents and flag AI-generated content. Vendors and papers quote detection
+rates of 90--100\% under calibration, and deployments inherit these numbers
+as operating expectations. This paper shows that three systematic failure
+modes---each easy to trigger with ordinary text, each invisible to the
+standard evaluation protocol (same-domain calibration, random test
+splits)---collapse those numbers on real corpora, and that two of the three
+have no fix inside the watermark itself.
+
+We study \emph{lexical statistical watermarks}: the verifier applies a
+keyed, deterministic predicate to words, accumulates per-band vote counts,
+and thresholds a $z$-style existence score, optionally decoding a multi-user
+identifier from band signs. Our host system, AAWM (v0.15.0), is one instance
+of this class; the pitfalls, however, are properties of the statistic, not
+of the implementation. Where a claim could be implementation-specific we
+reproduce it on (i) an independent 80-line reference implementation with no
+shared code, and (ii) the official implementation of PostMark
+\cite{postmark}, a post-hoc black-box watermark of a different statistical
+family.
+
+\paragraph{Finding 1: correlated votes.}
+The word predicate is a deterministic function of the key. Repeating one
+dictionary word $N$ times therefore contributes $N$ perfectly correlated
+``samples'' to a test whose binomial variance formula assumes independence.
+The existence score grows $\propto\sqrt{N}$ without bound: an unwatermarked
+form letter that repeats a single in-dictionary word 640 times scores
+$25.3$ against a default threshold of $8$ (Figure~\ref{fig:eb1}). Capping
+votes per word per document at 3 bounds the attack ($\le 1.73$) and, on
+in-domain text, is also the \emph{best operating point}: highest true-positive
+rate with zero false positives (Figure~\ref{fig:eb2}). The reference
+implementation reproduces the identical curve (Figure~\ref{fig:eb4}).
+
+\paragraph{Finding 2: non-transferable null models.}
+Thresholds fitted on a calibration corpus are domain-specific in a strong,
+measured sense: calibrating on technical prose and testing on classical
+Chinese novels or English literature raises the false-positive rate from
+0--6.9\% (uncalibrated) to 3.5--84\%---\emph{worse than not calibrating at
+all} (Table~\ref{tab:eb3}). Only in-domain calibration restores FPR to
+0--7.7\%, and even that requires an adequate corpus size: with only 14
+calibration documents, in-domain calibration itself fails (46.7\% FPR).
+PostMark's bounded presence-ratio statistic is measurably more
+domain-stable (0.5--5\% cross-domain FPR), showing that pitfall severity is
+statistic-dependent.
+
+\paragraph{Finding 3: the template attack.}
+Texts built from repeated template sentences (form letters, mail merges,
+review-boosting content) produce high existence scores \emph{and} false
+attribution to specific registered users---13--28\% across two independent
+samples---because the noise genuinely aligns with some candidate's bit
+pattern (candidate score ratio up to 0.64, band-alignment rate up to 0.81;
+Figure~\ref{fig:eb6}). Abstain-on-low-margin protocols do not prevent this:
+the alignment is real, so the margin is large. On natural templates with
+slot filling, false attribution disappears (0\%) but existence false
+positives remain high without calibration (30\%); only in-domain calibration
+or a business-layer similarity prefilter mitigates (Table~\ref{tab:eb7}).
+PostMark's presence ratio is structurally immune to this attack (score
+exactly 0 on 200 template texts).
+
+\paragraph{Contributions.}
+\begin{itemize}
+\item \textbf{C1} We construct, reproduce on two independent implementations,
+and bound the correlated-vote inflation, and characterize the cap trade-off
+(\S\ref{sec:f1}).
+\item \textbf{C2} We provide the first cross-domain measurement of empirical
+threshold transfer: cross-domain calibration is a net negative; corpus size
+matters as much as domain match (\S\ref{sec:f2}).
+\item \textbf{C3} We identify the template attack as a structural boundary
+of statistical attribution, characterize its mechanism, and rank mitigations
+(\S\ref{sec:f3}).
+\item \textbf{C4} We show the pitfall profile is statistic-dependent
+(presence-ratio vs.\ $z$-test), turning our findings into a deployment
+checklist (\S\ref{sec:recs}).
+\end{itemize}
+
+All experiments are fixed-seed and reproducible from the released artifact
+(AAWM v0.15.0, experiment scripts, and data files).

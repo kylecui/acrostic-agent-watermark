@@ -1,1 +1,93 @@
-% f3_template — 待写（见 outline.md 对应节）
+\section{Finding 3: The Template Attack}
+\label{sec:f3}
+
+\subsection{Existence and attribution failure}
+Texts assembled from repeated template sentences are a real document class:
+form letters, mail merges, generated reviews, compliance checklists. We
+construct them by repeating a four-sentence Chinese template with
+zero-cost-dictionary saturation ($6$--$10$ copies; 100 texts) and measure
+both failure modes of a verifier with a 50-user registry: existence FPR and
+\emph{false attribution} (a specific wrong user returned with confidence).
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\columnwidth]{figures/fig_eb6_template_attribution.pdf}
+\caption{E-B6: template texts vs.\ registry size (1--200 users). Existence
+FPR is high throughout (73--79\%); attribution FPR is substantial
+(1--46\%) but not monotone, while the mechanism quantities---candidate
+score ratio and band-alignment rate---rise monotonically with registry
+size.}
+\label{fig:eb6}
+\end{figure}
+
+Figure~\ref{fig:eb6} (existence/attribution) shows the surface phenomenon;
+the lower panel quantities reveal the mechanism. The winning candidate's
+score ratio (best soft-match score divided by the theoretical maximum
+$\sum|z|$) rises monotonically with registry size
+($-0.02 \to 0.30 \to 0.53 \to 0.64$ for 1/10/50/200 users), as does the
+fraction of bands whose sign agrees with the winner's bit pattern
+($0.50 \to 0.64 \to 0.76 \to 0.81$). The template's genuine statistical
+structure---a few dominant bands with consistent colors---\emph{really
+aligns} with some registered user's bit pattern as the registry grows.
+This is why abstain-on-low-margin protocols fail here: the margin is not
+low. The protocol's truth-absence guard (winner score must reach a fraction
+of the theoretical maximum) is calibrated for random noise and is bypassed
+by real alignment.
+
+Attribution FPR itself is not monotone in registry size (14\%, 46\%, 13\%,
+1\% at 1/10/50/200 users across two independent 100-text samples, 13--28\%):
+it additionally depends on the masked $k$-bit collision structure of the
+specific registry. The mechanism quantities, not the headline rate, are the
+predictable signature.
+
+\subsection{Natural templates and mitigation ranking}
+Pure sentence copying is the extreme of a spectrum. We therefore test
+\emph{slot-filled} templates (names/topics drawn from pools; sentence
+uniqueness 0.47--0.76; 100 texts). False attribution disappears entirely
+(0\% in all modes)---extreme repetition is a necessary condition for
+misattribution---but existence FPR remains 30\% uncalibrated, dropping to
+2\% under in-domain calibration. A business-layer prefilter (reject texts
+with unique-sentence ratio below 0.5) rejects 12\% of natural templates
+(only the extreme bucket) and leaves 4.6\% FPR in the passed set.
+
+\begin{table}[t]
+\centering\small
+\caption{E-B7/E-B7b: template-attack mitigations ranked on two template
+classes. In-domain calibration is the only mitigation that clears both
+classes; prefiltering is a safety net for extreme repetition, not a primary
+defense.}
+\label{tab:eb7}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Template class & Mitigation & Exist.\ FPR & Attr.\ FPR & Reject \
+\midrule
+\multirow{3}{*}{pure copy ($n$=100)}
+& none & 0.74 & 0.28 & --- \
+& in-domain calib. & 0.00 & 0.00 & --- \
+& similarity prefilter & --- & --- & 1.00 \
+\midrule
+\multirow{3}{*}{slot-filled ($n$=50)}
+& none & 0.30 & 0.00 & --- \
+& in-domain calib. & 0.02 & 0.00 & --- \
+& similarity prefilter & 0.05$^\dagger$ & 0.00 & 0.12 \
+\bottomrule
+\multicolumn{5}{@{}l@{}}{\footnotesize $^\dagger$FPR in the passed subset.}
+\end{tabular}
+\end{table}
+
+Table~\ref{tab:eb7} ranks the mitigations. For $z$-test schemes, the
+template attack is a \emph{structural boundary}: the same
+vocabulary-dense, low-entropy construction that makes templates ubiquitous
+in business workflows makes them statistically adversarial, and no protocol
+tweak repairs this---only calibration on the target domain or routing
+highly repetitive texts away from watermark verdicts contain the damage.
+
+\subsection{Statistic dependence, again}
+Running the same construction through PostMark's official detector yields
+presence scores of exactly 0.0 on all 200 template texts: the
+embedding-derived word lists for a repetitive text consist of
+semantically-related words that do not occur in the text, and literal
+presence fails. PostMark is structurally immune to this template class---an
+instance of the general pattern that bounded, per-text-adaptive statistics
+trade away the UID-decoding capacity that $z$-test schemes use, and with it
+F1/F3 exposure (\S\ref{sec:recs}).

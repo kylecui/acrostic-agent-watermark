@@ -1,1 +1,28 @@
-% related — 待写（见 outline.md 对应节）
+\section{Related Work}
+
+\paragraph{Lexical and post-hoc watermarks.}
+Synonym-substitution watermarks predate LLMs \cite{topkara2006}; the modern
+black-box line includes PostMark \cite{postmark} (presence ratio over
+embedding-derived word lists), SimMark (inter-sentence embedding
+similarity), and KGW-style lexical variants \cite{kgw}. Chinese
+zero-watermarking \cite{wang2009} established frequency-statistics
+registration. AAWM \cite{aawm} (our host) combines keyed greenlists with
+multi-user band coding and an abstain protocol; none of the cited works
+evaluates repetition constructions, cross-domain threshold transfer, or
+template-class texts, which is precisely the gap this paper fills.
+
+\paragraph{Statistical calibration for text watermarks.}
+LLM watermark deployments increasingly report empirical calibration
+(SynthID-Text \cite{synthid} reports production-scale thresholds). To our
+knowledge no prior work measures \emph{cross-domain} transfer of empirical
+null models; classifier-calibration folklore predicts miscalibration under
+distribution shift, and we provide the first controlled measurement for
+lexical watermark statistics.
+
+\paragraph{Abstention and low-confidence protocols.}
+Abstain-on-low-margin protocols are standard in watermark attribution
+\cite{aawm,stealthink}. Our template attack is a constructive
+counterexample in which real signal--candidate alignment produces high
+margins, showing such protocols bound \emph{ambiguity}, not
+\emph{truth-absence}; complementing guards (score-ratio floors) are
+bypassable by construction.

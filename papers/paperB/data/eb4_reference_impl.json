@@ -2,8 +2,8 @@
   "experiment": "eb4_reference_impl",
   "seed": 20260911,
   "aawm_version": "0.15.0",
-  "commit": "19f4cef",
-  "generated_at": "2026-11-22T12:58:52",
+  "commit": "6abba24",
+  "generated_at": "2026-11-22T14:32:36",
   "config": {
     "impl": "ReferenceLexicalWM (independent, ~80 lines)",
     "predicate": "HMAC(key,'c:'+w) top bit",

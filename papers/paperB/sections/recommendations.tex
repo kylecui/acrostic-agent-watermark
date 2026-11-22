@@ -1,1 +1,26 @@
-% recommendations — 待写（见 outline.md 对应节）
+\section{Recommendations}
+\label{sec:recs}
+
+\paragraph{For deployers.}
+(1)~Calibrate in-domain, on $\ge$20 (production: $\ge$50) documents;
+cross-domain calibration is worse than none (Finding~2).
+(2)~Set a per-word vote cap and re-derive it when dictionary, language, or
+codec mode changes; $c{=}3$ is the measured optimum for our configuration
+(Finding~1). (3)~Route high-repetition texts (unique-sentence ratio below
+$\sim$0.5) away from watermark verdicts to manual review (Finding~3).
+(4)~Report existence and attribution conclusions with their calibration
+domain, corpus size, and text-length band attached; never quote a bare
+detection rate.
+
+\paragraph{For researchers.}
+(5)~Add the repetition construction and the template construction to the
+standard attack suite; both are one line of code and neither appears in
+current protocols. (6)~Report the statistic family ($z$-test vs.\
+presence-ratio vs.\ regression) alongside robustness claims: our data show
+the pitfall profile---F1/F2/F3 severity---is statistic-dependent, so
+cross-scheme comparisons without this axis are uninterpretable.
+(7)~Ship deterministic artifacts: PostMark's embedding table is a random
+per-initialization subset, so its released scores are not bit-reproducible
+across environments (our positive control was invalidated for this reason
+and is reported as such). Fixed tables or published seeds are cheap
+insurance.

@@ -1,0 +1,28 @@
+{
+  "session_salt": "29652e92ce5dfb60b6f2805be18abdf8",
+  "user_id": 8,
+  "user_alias": null,
+  "has_seal": true,
+  "existence_score": 2.7320508075688776,
+  "codec_mode": "zero_cost",
+  "bands": [
+    11,
+    12
+  ],
+  "capacity": 2,
+  "n_bits": 2,
+  "margin_ratio": 0.8035443551673168,
+  "weak_embed": true,
+  "reliability": "low",
+  "key_version": 1,
+  "dict_version": "12b060c77ef87430",
+  "uid_layout": [],
+  "seal": {
+    "merkle_root": "5c0e7ad3a153e0cf3ae50faf8356cdd691bcb73af99481496eb3cca638d3d522",
+    "para_hashes": [
+      "18030583158dc74a56b05401e69d61b21a325183d4aa2085989b6bca48968124"
+    ],
+    "aad": "0008",
+    "version": 1
+  }
+}

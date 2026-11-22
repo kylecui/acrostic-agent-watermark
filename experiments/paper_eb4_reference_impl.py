@@ -80,6 +80,25 @@ def main() -> None:
                            "statistic": "single-bin z over occurrence counts"},
                           results)
     print(f"\n数据: {path}")
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(5.2, 3.2))
+    ax.plot([r["n_repetitions"] for r in rows],
+            [r["abs_z"] for r in rows], "o-")
+    ax.axhline(3.0, color="gray", ls=":", lw=0.8, label="$|z|=3$")
+    ax.set_xscale("log")
+    ax.set_xlabel("repetitions of one word (unwatermarked text)")
+    ax.set_ylabel("$|z|$ (single-bin)")
+    ax.set_title("Independent reference implementation (E-B4)", fontsize=9)
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    out = os.path.join("papers", "paperB", "figures",
+                       "fig_eb4_reference_impl.pdf")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    fig.savefig(out)
+    print(f"FIG: {out}")
+
 
 
 if __name__ == "__main__":

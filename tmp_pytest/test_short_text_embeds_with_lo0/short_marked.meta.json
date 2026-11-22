@@ -1,0 +1,27 @@
+{
+  "session_salt": "772c82db49ddf5ac8a73e26129496757",
+  "user_id": 11224,
+  "user_alias": "alice",
+  "has_seal": true,
+  "existence_score": 2.345207879911715,
+  "codec_mode": "zero_cost",
+  "bands": [
+    4
+  ],
+  "capacity": 1,
+  "n_bits": 1,
+  "margin_ratio": 2.0465674168554693,
+  "weak_embed": false,
+  "reliability": "low",
+  "key_version": 1,
+  "dict_version": "9788ef64806289eb",
+  "uid_layout": [],
+  "seal": {
+    "merkle_root": "4db6235ba4c5a3e5b5d45cf7d13d39c7fafd251e519282472710a14e4bb49147",
+    "para_hashes": [
+      "aaecb364c23a06dc6422238286d7f9517b1da431e8cbb6e5fb343c41c522c3d0"
+    ],
+    "aad": "2bd8",
+    "version": 1
+  }
+}

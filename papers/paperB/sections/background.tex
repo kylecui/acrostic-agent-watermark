@@ -1,1 +1,32 @@
-% background — 待写（见 outline.md 对应节）
+\section{Background and Problem Setting}
+\label{sec:background}
+
+\paragraph{Lexical statistical watermarks.}
+A watermark in the class we study is defined by: (i) a keyed deterministic
+\emph{word predicate} $g_K(w) \in \{0,1\}$ (e.g., the top bit of
+$\mathrm{HMAC}(K, w)$); (ii) a keyed \emph{band map} $b_K(w) \in [0, B)$
+partitioning dictionary words into $B$ frequency bands; (iii) an embedder
+that rewrites occurrences of dictionary words toward the target color of
+their band (e.g., choosing the synonym mapped to the band's target bit);
+(iv) a detector that tokenizes suspect text, counts per-band green votes
+$g_b$ and total votes $n_b$, and computes per-band $z_b = (g_b - p_0 n_b) /
+\sqrt{p_0(1-p_0)\,n_b}$ with base rate $p_0$ (default 0.5, optionally
+calibrated). The \emph{existence score} is $\sum_b |z_b|$; a multi-user
+identifier is decoded from band signs and matched against a registry,
+with an abstain protocol for low-margin or missing-truth cases.
+
+\paragraph{Threat model.}
+The attacker knows the scheme and that a watermark may be present, but not
+the key. They may edit leaked text (insert, delete, synonym-swap, reorder)
+or \emph{construct} text to be scanned (form letters, template spam). The
+verifier holds the key and optional per-document metadata (salt, band set).
+We do not consider key compromise; a symmetric key leak is total for any
+scheme in this class.
+
+\paragraph{Evaluation protocol and its blind spot.}
+Standard protocol: calibrate thresholds on a same-domain null corpus, test
+on held-out same-domain samples, report TPR at low FPR. All three of our
+findings live \emph{outside} this protocol: repetition attacks
+(Finding~1), domain mismatch (Finding~2), and constructed template texts
+(Finding~3) are neither in the calibration corpus nor in the test split.
+This is why they survive peer review and ship to production.

@@ -22,8 +22,28 @@ Attack:\ Pitfalls of Statistical Watermarks on Text}
 \maketitle
 
 \begin{abstract}
-\emph{（M3 填写；骨架先占位：三个失效模式一句话 + 缓解一句话 +
-artifact 声明一句话。）}
+Statistical watermarks over text are deployed with detection rates
+calibrated and quoted per domain. We show, with fixed-seed experiments on
+an open-source watermark (AAWM v0.15.0), an independent reference
+implementation, and the official PostMark implementation, that three
+ordinary text phenomena break this contract. (1)~Repetition: deterministic
+keyed word predicates make repeated words perfectly correlated votes, so an
+unwatermarked form letter repeating one dictionary word 640 times scores
+25.3 against a threshold of 8; per-word vote capping bounds the attack and,
+at cap 3, is also the best in-domain operating point. (2)~Domain shift:
+thresholds calibrated on one corpus transfer negatively---cross-domain
+calibration raises false-positive rates from 0--6.9\% to 3.5--84\%, worse
+than no calibration; in-domain calibration restores 0--7.7\% but fails when
+the calibration corpus is too small. (3)~Templates: repeated-sentence
+template texts not only trigger false existence verdicts but produce false
+attribution to registered users (up to 46\%) that abstain-on-low-margin
+protocols cannot prevent, because the signal genuinely aligns with a
+candidate; mitigations rank calibration $>$ repetition prefiltering
+$>$ none. Pitfall severity is statistic-dependent: PostMark's bounded
+presence-ratio statistic is immune to the repetition and template attacks
+and far more domain-stable (0.5--5\% cross-domain FPR), at the cost of the
+multi-user decoding capacity $z$-test schemes provide. We release all
+scripts, data, and the reproduction environment.
 \end{abstract}
 
 \input{sections/intro}
