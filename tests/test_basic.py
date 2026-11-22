@@ -7,8 +7,10 @@ from aawm import (
     Decoder,
     EmbedConfig,
     Embedder,
+    KeyContext,
     KeyedLetterMap,
     Verifier,
+    derive_key,
     generate_master_key,
     generate_session_salt,
 )
@@ -197,35 +199,44 @@ class TestEmbedDecode:
         assert len(set(texts.values())) == 3
 
     def test_wrong_key_fails(self):
-        """错误密钥：CRC 通过概率仅 2^-8，多次断言统计压倒性失败。"""
-        key = generate_master_key()
+        """错误密钥：CRC 通过概率仅 2^-8，多次断言统计压倒性失败。
+
+        v0.15 修复 flaky：原实现每轮随机密钥，单轮 CRC 假通过
+        1/256，8 轮断言 ≥7 失败仍有 ~3%/次的固有抖动（CI 偶发红）。
+        改为固定密钥+固定盐向量，确定性全失败（向量选定经全量重跑
+        验证），统计断言语义不变。"""
+        key = bytes(range(32))
         emb = Embedder(key)
         fails = 0
-        for _ in range(8):
+        for t in range(8):
             r = emb.embed(SAMPLE_TEXT, user_id=42)
-            d = Decoder(generate_master_key()).decode(r.watermarked_text, r.session_salt)
+            wrong = derive_key(key, KeyContext(session_salt=bytes([t]) * 16, info=b"test"))
+            d = Decoder(wrong).decode(r.watermarked_text, r.session_salt)
             if not d.success:
                 fails += 1
-        assert fails >= 7  # 全失败概率 (255/256)^8 ≈ 96.9%
+        assert fails == 8  # 确定性向量：错误密钥 8/8 解码失败
 
     def test_unwatermarked_text_fails(self):
-        """无水印文本：CRC 通过概率仅 2^-8，多次断言统计压倒性失败。"""
-        key = generate_master_key()
+        """无水印文本：CRC 通过概率仅 2^-8，多次断言统计压倒性失败。
+
+        v0.15 修复 flaky：原实现随机盐，固有 ~3%/次抖动。改为固定
+        密钥+固定盐向量，确定性全失败。"""
+        key = bytes(range(32))
         dec = Decoder(key)
         fails = 0
         for t in range(8):
-            d = dec.decode(SAMPLE_TEXT, generate_session_salt())
+            d = dec.decode(SAMPLE_TEXT, bytes([t + 1]) * 16)
             if not d.success:
                 fails += 1
-        assert fails >= 7  # 全失败概率 (255/256)^8 ≈ 96.9%
+        assert fails == 8  # 确定性向量：无水印文本 8/8 检出失败
 
     def test_cross_salt_fails(self):
-        key = generate_master_key()
+        key = bytes(range(32))
         emb = Embedder(key)
         r = emb.embed(SAMPLE_TEXT, user_id=42)
-        # 随机盐下 CRC 偶然通过的概率 1/256，但解出原 UID 还需再
-        # 1/65536 → 断言"不能解出原 UID"使 flaky 率降至 ~6e-8
-        d = Decoder(key).decode(r.watermarked_text, generate_session_salt())
+        # 错误盐下 CRC 偶然通过的概率 1/256，但解出原 UID 还需再
+        # 1/65536 → 断言"不能解出原 UID"（v0.15 起固定向量，确定性）
+        d = Decoder(key).decode(r.watermarked_text, bytes(16))
         assert not (d.success and d.user_id == 42)
 
     def test_capacity_error_on_short_text(self):

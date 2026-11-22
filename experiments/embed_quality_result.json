@@ -1,0 +1,12 @@
+{
+  "random": {
+    "substitution_rate": 0.3447,
+    "neighbor_compat_rate": 0.7911,
+    "uid_recovery_under_15pct_attack": "1/5"
+  },
+  "scored": {
+    "substitution_rate": 0.3447,
+    "neighbor_compat_rate": 0.7911,
+    "uid_recovery_under_15pct_attack": "1/5"
+  }
+}

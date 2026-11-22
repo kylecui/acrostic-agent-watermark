@@ -541,10 +541,15 @@ def _iter_candidate_records(paths: List[Path]):
 
 
 def _uid_alias_match(t, archived_uid) -> bool:
-    """解码 UID 与 meta 存档 UID 是否一致（盐外证据，含自适应 k-bit 掩码对齐）。
+    """解码 UID 与 meta 存档 UID 是否一致（盐外证据，按证据掩码比对）。
 
     攻击下存在性常存活但 UID 解码失真（"自信地错"），meta 里存的
-    user_id/uid 是嵌入时的真值——解码值与之不一致即视为失真。
+    user_id/uid 是嵌入时的真值——有证据带内不一致即视为失真。
+
+    v0.15：优先按 t.evidence_mask（有证据带的位掩码）比对——无词带
+    的默认 bit=0 是"无证据"而非"矛盾"；旧严格相等在 UID 置位带恰无
+    词典词时无攻击也必然弃权。TraceResult.evidence_mask 为 0（旧
+    版 facade）时退回相等 / k-bit 掩码语义。
     """
     if archived_uid is None or t.uid is None:
         return False
@@ -552,6 +557,9 @@ def _uid_alias_match(t, archived_uid) -> bool:
         auid = int(archived_uid)
     except (TypeError, ValueError):
         return False
+    mask = getattr(t, "evidence_mask", 0)
+    if mask:
+        return (t.uid & mask) == (auid & mask)
     if t.uid == auid:
         return True
     mask = (1 << t.n_bits) - 1 if t.n_bits else None
