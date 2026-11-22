@@ -36,3 +36,6 @@ tmp_pytest/
 models/
 .venv/
 papers/third_party/PostMark/
+*.blg
+*.aux
+*.out
