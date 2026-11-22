@@ -61,9 +61,10 @@
 
 ## 5. 给招募人员的操作清单
 
-1. 把 `item_pool.json` 全文粘贴进 `survey_template.html` 的
-   `/*PASTE_ITEM_POOL_JSON_HERE*/` 处，另存为 `survey_HE.html`；
-   （可选：托管到任意静态托管，或当面测试直接双击打开）
+1. 运行 `python experiments/paper_ea5b_build_survey.py` 生成分发文件
+   `human_eval/dist/survey_HE.html`（单文件，题库已内联，双击即用）；
+   说明：浏览器禁止 file:// 下的 fetch 旁加载 JSON，故采用构建期内联；
+   若模板已被手工内联，脚本自动转为校验直通模式。
 2. 发放给参与者编号 + 页面链接/文件；
 3. 回收 JSON，按 §3 剔除、跑 `paper_ea6_human_eval_stats.py`；
 4. 费用：Credamo 建议 ¥6/人 × 40 = ¥240（预算外，需所有者批）。
