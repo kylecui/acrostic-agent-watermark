@@ -402,9 +402,22 @@ class Watermarker:
 
         语料要求：几十篇同领域无水印文本（≥3 篇即可拟合，但样本少
         时阈值保守度不足）。
+
+        v0.15.1 护栏（跨域 FPR 实测的教训，docs/cross_domain_fpr_report.md
+        N1/E-B3）：
+        - 语料 <10 篇：σ 只有盐间方差、缺跨文本方差 → 阈值系统性偏紧，
+          域内标定也可能失效（实测 14 篇标定语料 → FPR 46.7%）——警告；
+        - 某语言的标定语料零词典命中（典型：拿中文语料拟合英文模型）：
+          该语言 null 模型基于空证据，阈值无意义——警告。
         """
         if self._codec_mode == "default":
             raise ValueError("default 模式无自适应路径，无需 null 标定")
+        if len(corpus) < 10:
+            warnings.warn(
+                f"标定语料仅 {len(corpus)} 篇（<10）：null 模型的 σ 估计"
+                "缺跨文本方差，阈值可能系统性偏紧（实测 <20 篇时域内"
+                "标定也可能失效，FPR 可达 46.7%）——建议扩充到 ≥20 篇"
+                "（生产 ≥50 篇）", stacklevel=2)
         # 1. 词频表（先建，拟合管线即运行时管线；清空防陈旧条目）
         self._p0_vocab = {}
         for tag in (b"zh", b"en"):
@@ -413,6 +426,22 @@ class Watermarker:
         # 2. null 阈值模型（_build_codec 此时已带词频表 p0）
         self._fit_null_model(corpus, b"zh")
         self._fit_null_model(corpus, b"en")
+        # v0.15.1 语言内容守卫：拟合后逐语言抽查命中量，零命中说明
+        # 语料语言与 codec 语言不匹配（如中文语料拟合英文 null 模型，
+        # E-B3 实测该类模型阈值无意义、FPR 35-67%）
+        for tag, label in ((b"zh", "中文"), (b"en", "英文")):
+            probe = self._build_codec(generate_session_salt(), tag)
+            hits = 0
+            for t in corpus[:5]:
+                for _raw, norm in probe._tokenizer(t):
+                    if norm is not None and norm in probe._all_words:
+                        hits += 1
+            if hits == 0:
+                warnings.warn(
+                    f"标定语料在{label} codec 下零词典命中：该语言的 "
+                    "null 模型基于空证据拟合，阈值无意义（典型原因："
+                    "语料语言与 codec 语言不匹配）——请换用匹配语言的"
+                    "标定语料", stacklevel=2)
 
     def export_calibration(self) -> Dict[str, Any]:
         """导出当前标定为可 JSON 序列化的标定文件结构。
