@@ -69,7 +69,7 @@
 `~/human_eval_survey/responses/`（仅服务器本地，含 pid 格式校验、
 256KB 上限、防覆盖；**绝不进版本库**）。
 
-**发布门禁（每次改模板后必做）**：`node papers/paperA/human_eval/smoke_test.js papers/paperA/human_eval/dist/survey_HE.html` 须输出 SMOKE_PASS（校验 radio 组唯一性等）；再加一次端到端模拟作答（三部分+导出）确认交互。历史教训：练习判定反转、pair 记录语义、spot 串组三个参与者可见 bug 均靠人工实测才暴露。
+**发布门禁（每次改模板后必做）**：`node papers/paperA/human_eval/smoke_test.js papers/paperA/human_eval/dist/survey_HE.html` 须输出 SMOKE_PASS（校验 radio 组唯一性等）；端到端模拟作答已自动化：`python experiments/paper_ea7_cdp_e2e.py`（headless Edge 经 CDP 真实点选 78 组并提交，断言服务器落盘）。历史教训：练习判定反转、pair 记录语义、spot 串组三个参与者可见 bug 均靠人工实测才暴露。
 
 **离线模式（备用）**：`python experiments/paper_ea5b_build_survey.py`
 生成单文件 `human_eval/dist/survey_HE.html`（题库构建期内联，
