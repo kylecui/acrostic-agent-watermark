@@ -339,6 +339,11 @@ class GreenlistCodec:
         self._all_words: set = set()
         for members in dictionary.values():
             self._all_words.update(members)
+        # v0.15.2 跨词界碎片守卫用的扩展边界词表（懒加载，见
+        # _boundary_lexicon）——零感词典外的"真词"（如 义务）也要能
+        # 识别，否则 注意|义务 会被前向最大匹配切成 注意|意义|务，
+        # 把 意义 换成 价值 输出"注价值务"（owner 实测发现的病句）
+        self._boundary_words: Optional[set] = None
 
         # --- 必修课 1：不相交划分（先到先得）---
         word_owner: Dict[str, str] = {}
@@ -389,6 +394,25 @@ class GreenlistCodec:
             self._k_band, group_head.encode("utf-8"), hashlib.sha256
         )
         return mac.digest()[0] % self.n_bands
+
+    def _boundary_lexicon(self) -> set:
+        """扩展边界词表 = 本 codec 全部词 ∪ 默认中文大词典词（仅 zh）。
+
+        懒加载 + 实例缓存：synonym_data 对默认词典有模块级缓存，构建
+        词集约 5ms，只在首个需要边界判断的 codec 实例付一次。
+        英文词有天然空格分隔，跨词界碎片不构成问题，直接返回
+        _all_words。
+        """
+        if self._boundary_words is not None:
+            return self._boundary_words
+        if self.language_tag == b"zh":
+            from .synonym_data import load_default_zh_dictionary
+            extra = {w for ws in load_default_zh_dictionary().values()
+                     for w in ws}
+            self._boundary_words = self._all_words | extra
+        else:
+            self._boundary_words = self._all_words
+        return self._boundary_words
 
     # ------------------------------------------------------------------
     # 嵌入不变规范化（v0.15 派生盐绑定用）
@@ -572,6 +596,18 @@ class GreenlistCodec:
                 if raw:
                     last_char = raw[-1]
                     last_word = raw.lower()
+                continue
+            # v0.15.2 跨词界碎片守卫：raw 若是横跨两个真词边界的假
+            # 词元（前向最大匹配的已知薄弱点，如 注意|义务 中的 意义），
+            # 替换会产生"注价值务"类病句——raw 尾字+右邻字 或 左邻字
+            # +raw 首字 构成真词（大词典）即判定跨界，保守跳过。
+            # 代价仅是个别嵌入位点的容量损失，可忽略。
+            blx = self._boundary_lexicon()
+            if ((next_char and (raw[-1] + next_char) in blx)
+                    or (last_char and (last_char + raw[0]) in blx)):
+                out.append(raw)
+                last_char = raw[-1]
+                last_word = raw.lower()
                 continue
             want = bool(bits[b])
             pool = [x for x in self._w2group[norm] if bool(self.green(x)) == want]

@@ -36,3 +36,5 @@ tmp_pytest/
 models/
 *.blg
 papers/paperA/human_eval/responses/
+*.aux
+*.out
