@@ -39,3 +39,25 @@ invalid_env_mismatch；N4 作为论文的可复现性发现（§6 讨论）。
   （"zero-cost"未作主张，用 low-distortion 表述）。
 - LaTeX 编译未验证：本机无 pdflatex，编译检查列入拿到 TeX 环境后的
   第一个动作（登记为 W6 前置项）。
+
+## D-2026-09-11-04：事故记录——模型权重被 LFS 截获入库及处置
+
+**事故**：E-A1/A3 提交时 `git add -A` 把 ModelScope 下载的 Qwen 权重
+（3B fp16 + 7B AWQ，约 11.6GB）带入提交；仓库 .gitattributes 的 LFS
+规则将 safetensors 存入 .git/lfs（普通 gc 不可见，故首次 gc 后仍 12G）。
+
+**处置**（均已执行并验证）：
+1. `git rm --cached models` + `models/` 入 .gitignore，amend 提交——
+   权重留在工作区供实验、不进版本库；
+2. `git filter-branch` 清除历史中误提交的 paragram_xxl.pkl（113MB），
+   删 refs/original 后 gc——历史无 >2MB 对象；
+3. `git lfs prune` 清孤儿 LFS 对象 4 个/.git 从 12G 降至 3.0M；
+4. `git fsck --strict` 干净；filter-branch 重写了本地 tag 引用
+   （v0.14.x 内容未变、SHA 不变），下次 fetch 以 origin 为准即可。
+
+**教训**：`git add -A` 前先确认 .gitattributes 的 LFS 范围与大文件
+落地路径；实验产物目录（models/、.venv/）应先入 .gitignore 再工作。
+EOF
+
+**教训**：`git add -A` 前先确认 .gitattributes 的 LFS 范围与大文件
+落地路径；实验产物目录（models/、.venv/）应先入 .gitignore 再工作。
