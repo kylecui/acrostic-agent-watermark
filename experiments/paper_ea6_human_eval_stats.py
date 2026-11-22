@@ -67,18 +67,11 @@ def main() -> None:
             excluded.append({"pid": pid, "fa_rate": round(fa_r, 3),
                              "minutes": round(mins, 1)})
             continue
-        for idx, choice in r.get("pairs", {}).items():
-            it = pool["pair_items"][int(idx)]
-            marked_is_A = None  # 页面记录的是选项值即"更自然"的一侧
+        for idx, rec in r.get("pairs", {}).items():
+            pool["pair_items"][int(idx)]  # 校验 item 存在
             pair_n += 1
-            # 值本身记录的是 A/B；需与页面渲染一致——此处简化：
-            # survey 记录 value 为 'A'/'B'，而正确性判定需要位置映射。
-            # 页面实现里 results.pairs[idx] 存的是被选项值，
-            # 选项值在渲染时已绑定"若选此项则水印/原句更自然"——
-            # 见 survey_template.html：value 直接编码了 swap 后哪侧是水印。
-            # 约定：value 'A'/'B' 与渲染一致，判定需重渲染映射；
-            # 为稳健，pair 统计改由 answers 中附带的 side 字段判定。
-            if choice == it.get("_marked_side"):
+            # 记录语义（survey_template v1.1）：c=被选侧, m=水印侧
+            if isinstance(rec, dict) and rec.get("c") == rec.get("m"):
                 pair_hits += 1
         for k, v in sp.items():
             a = v.get("a")
@@ -116,9 +109,14 @@ def main() -> None:
                           {"responses": len(files)},
                           results, path=os.path.join(OUT, "ea6_human_eval.json"))
     print(f"\n数据: {path}")
-    print("\n注意: pair 统计依赖 survey 页面记录的水印侧标记"
-          "（_marked_side 字段）；若模板未注入该字段，pair 率需按"
-          "渲染映射重算——回收后首项校验。")
+    print("\n预注册判据对照（PROTOCOL.md §4）：")
+    pr = results["pair"]["rate"]
+    print(f"  pair 水印侧更自然率 {pr:.3f}（不可察觉=0.50, "
+          f"binom p={results['pair']['binom_p_gt_50pct']}）")
+    dr = results["spot"]["detection_rate"] - results["spot"]["false_alarm_rate"]
+    print(f"  spot 检出-误报差 {dr:.3f}（<0.10 不可察觉）")
+    lm = results["likert"]["mean"]
+    print(f"  likert 均分 {lm}（≥4.0 自然）")
 
 
 if __name__ == "__main__":
