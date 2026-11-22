@@ -3882,15 +3882,29 @@ function prCheck(i,ans){
   const ok = (ans === it.correct);
   document.getElementById('prf'+i).innerHTML = ok?'✓ 正确' : `✗ 再想想（提示：${it.hint||''}）`;
 }
-function exportResults(){
-  results.pid=document.getElementById('pid').value||'anon';
+async function exportResults(){
+  const pidRaw=(document.getElementById('pid').value||'').trim();
+  if(!/^(HE-\d{3}|N-\d{3})$/.test(pidRaw)){alert('请先填写参与者编号（HE-三位数字 或 N-三位数字）');return;}
+  results.pid=pidRaw;
   results.finished_at=new Date().toISOString();
-  const blob=new Blob([JSON.stringify(results,null,1)],{type:'application/json'});
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download=`human_eval_${results.pid}.json`;a.click();
+  const payload=JSON.stringify(results);
   const o=document.getElementById('out');o.className='done';
-  o.innerHTML='<p>已导出。若下载失败，复制下面文本发给招募方：</p>';
-  const t=document.createElement('textarea');t.value=JSON.stringify(results);o.appendChild(t);
+  // 在线模式：直传服务器（file:// 打开时 fetch 会失败，自动降级为下载）
+  let submitted=false;
+  try{
+    const resp=await fetch('/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:payload});
+    const j=await resp.json();
+    submitted = resp.ok && j.ok;
+  }catch(e){ submitted=false; }
+  if(submitted){
+    o.innerHTML='<p>✓ 已提交到服务器，感谢参与！可关闭本页。</p>';
+  }else{
+    o.innerHTML='<p>在线提交不可用（本地打开模式）。请下载 JSON 发给招募方：</p>';
+    const blob=new Blob([payload],{type:'application/json'});
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=`human_eval_${results.pid}.json`;a.click();
+    const t=document.createElement('textarea');t.value=payload;o.appendChild(t);
+  }
 }
 render();
 </script>

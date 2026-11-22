@@ -61,10 +61,18 @@
 
 ## 5. 给招募人员的操作清单
 
-1. 运行 `python experiments/paper_ea5b_build_survey.py` 生成分发文件
-   `human_eval/dist/survey_HE.html`（单文件，题库已内联，双击即用）；
-   说明：浏览器禁止 file:// 下的 fetch 旁加载 JSON，故采用构建期内联；
-   若模板已被手工内联，脚本自动转为校验直通模式。
+**在线收集（已部署，推荐）**：测评页托管在
+`https://petfish.ai/he/`——参与者打开链接即可作答，点"导出结果"时
+**自动直传服务器**（无需下载 JSON、无需发邮件）；回收进度与三项指标的
+实时汇总看 `https://petfish.ai/he/admin?token=<服务器 .admin_token>`。
+服务端为 systemd 常驻（`he-survey.service`），原始响应存
+`~/human_eval_survey/responses/`（仅服务器本地，含 pid 格式校验、
+256KB 上限、防覆盖；**绝不进版本库**）。
+
+**离线模式（备用）**：`python experiments/paper_ea5b_build_survey.py`
+生成单文件 `human_eval/dist/survey_HE.html`（题库构建期内联，
+浏览器 file:// 禁 fetch 旁加载 JSON 是根本原因）；双击打开时提交
+自动降级为 JSON 下载，按原流程回收。
 2. 发放给参与者编号 + 页面链接/文件；
 3. 回收 JSON，按 §3 剔除、跑 `paper_ea6_human_eval_stats.py`；
 4. 费用：Credamo 建议 ¥6/人 × 40 = ¥240（预算外，需所有者批）。
