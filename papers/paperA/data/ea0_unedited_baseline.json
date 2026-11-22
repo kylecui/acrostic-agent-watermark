@@ -1,9 +1,9 @@
 {
   "experiment": "ea0_unedited_baseline",
   "seed": 20260911,
-  "aawm_version": "0.15.0",
-  "commit": "81875b6",
-  "generated_at": "2026-11-22T18:06:46",
+  "aawm_version": "0.15.2",
+  "commit": "2d5d92c",
+  "generated_at": "2026-11-22T23:59:38",
   "config": {
     "n_texts": 100,
     "uid": 7,

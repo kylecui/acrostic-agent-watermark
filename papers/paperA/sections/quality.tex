@@ -5,8 +5,13 @@ color---on the zero-cost dictionary, 34.5\% of covered tokens change
 (substitution-rate measurement on the corpus). Whether this is perceptible
 is an empirical question; we measure it with a local Qwen2.5-3B as a
 perplexity proxy on 60 Chinese deliverables (sliding window, stride 512).
-The token-level NLL ratio (marked/original) has mean 1.093, median 1.093,
-and p95 1.148: a $\sim$9\% average perplexity increase, with no catastrophic
-outlier in the tail. We report this as a \emph{proxy}: a 3B model's
+The token-level NLL ratio (marked/original) has mean 1.084, median 1.078,
+and p95 1.138: a $\sim$9\% average perplexity increase, with no catastrophic
+outlier in the tail. Before the v0.15.2 cross-boundary fragment guard, 4.0\% of
+substitution sites (202/5070 on the corpus) were spurious
+cross-word tokens (replacing \emph{意义} inside \emph{注意义务}
+yields the garble \emph{注价值务}), which the guard now skips
+conservatively; the PPL figures above are post-guard. We report this as
+a \emph{proxy}: a 3B model's
 sensitivity is weaker than a 7B model's or a human's, and a human blind
 study is the mandatory next step before claiming ``imperceptible''.

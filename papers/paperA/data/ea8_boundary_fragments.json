@@ -1,0 +1,39 @@
+{
+  "experiment": "ea8_boundary_fragments",
+  "seed": 20260911,
+  "aawm_version": "0.15.2",
+  "commit": "2d5d92c",
+  "generated_at": "2026-11-22T23:59:07",
+  "config": {
+    "n_texts": 100,
+    "codec": "zero_cost zh, guard v0.15.2"
+  },
+  "results": {
+    "n_texts": 100,
+    "group_hits": 5070,
+    "guarded": 202,
+    "fragment_rate": 0.0398,
+    "examples": [
+      {
+        "raw": "建议",
+        "context": "略[建议]和"
+      },
+      {
+        "raw": "和",
+        "context": "议[和]实"
+      },
+      {
+        "raw": "与",
+        "context": "参[与]者"
+      },
+      {
+        "raw": "之中",
+        "context": "内[之中]小"
+      },
+      {
+        "raw": "品质",
+        "context": "产[品质]量"
+      }
+    ]
+  }
+}
