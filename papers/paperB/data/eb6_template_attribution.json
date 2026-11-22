@@ -1,0 +1,51 @@
+{
+  "experiment": "eb6_template_attribution",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "87946d2",
+  "generated_at": "2026-11-22T12:54:16",
+  "config": {
+    "registry_sizes": [
+      1,
+      10,
+      50,
+      200
+    ],
+    "n_texts": 100,
+    "config": "zero_cost zh, uncalibrated"
+  },
+  "results": {
+    "1": {
+      "registry_size": 1,
+      "n": 100,
+      "fpr_existence": 0.73,
+      "fpr_attribution": 0.14,
+      "score_ratio_mean": -0.0219,
+      "band_align_rate_mean": 0.5031
+    },
+    "10": {
+      "registry_size": 10,
+      "n": 100,
+      "fpr_existence": 0.74,
+      "fpr_attribution": 0.46,
+      "score_ratio_mean": 0.2983,
+      "band_align_rate_mean": 0.637
+    },
+    "50": {
+      "registry_size": 50,
+      "n": 100,
+      "fpr_existence": 0.75,
+      "fpr_attribution": 0.13,
+      "score_ratio_mean": 0.5294,
+      "band_align_rate_mean": 0.758
+    },
+    "200": {
+      "registry_size": 200,
+      "n": 100,
+      "fpr_existence": 0.79,
+      "fpr_attribution": 0.01,
+      "score_ratio_mean": 0.6387,
+      "band_align_rate_mean": 0.8113
+    }
+  }
+}

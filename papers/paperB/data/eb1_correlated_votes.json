@@ -1,0 +1,73 @@
+{
+  "experiment": "eb1_correlated_votes",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "87946d2",
+  "generated_at": "2026-11-22T12:49:51",
+  "config": {
+    "key": "bytes(range(32))",
+    "salt": "bytes(range(16))",
+    "codec": "zero_cost_zh",
+    "word_index": 0,
+    "template": "我们要重视{w}建设。",
+    "n_values": [
+      1,
+      10,
+      40,
+      160,
+      640
+    ]
+  },
+  "results": {
+    "word": "一般",
+    "band": 4,
+    "green": 0,
+    "rows": [
+      {
+        "n_repetitions": 1,
+        "existence_capped_v015": 1.0,
+        "existence_uncapped_v014": 1.0,
+        "n_dict_words": 1,
+        "default_threshold": 8.0,
+        "crosses_default_capped": false,
+        "crosses_default_uncapped": false
+      },
+      {
+        "n_repetitions": 10,
+        "existence_capped_v015": 1.732,
+        "existence_uncapped_v014": 3.162,
+        "n_dict_words": 3,
+        "default_threshold": 8.0,
+        "crosses_default_capped": false,
+        "crosses_default_uncapped": false
+      },
+      {
+        "n_repetitions": 40,
+        "existence_capped_v015": 1.732,
+        "existence_uncapped_v014": 6.325,
+        "n_dict_words": 3,
+        "default_threshold": 8.0,
+        "crosses_default_capped": false,
+        "crosses_default_uncapped": false
+      },
+      {
+        "n_repetitions": 160,
+        "existence_capped_v015": 1.732,
+        "existence_uncapped_v014": 12.649,
+        "n_dict_words": 3,
+        "default_threshold": 8.0,
+        "crosses_default_capped": false,
+        "crosses_default_uncapped": true
+      },
+      {
+        "n_repetitions": 640,
+        "existence_capped_v015": 1.732,
+        "existence_uncapped_v014": 25.298,
+        "n_dict_words": 3,
+        "default_threshold": 8.0,
+        "crosses_default_capped": false,
+        "crosses_default_uncapped": true
+      }
+    ]
+  }
+}

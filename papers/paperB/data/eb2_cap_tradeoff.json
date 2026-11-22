@@ -1,0 +1,97 @@
+{
+  "experiment": "eb2_cap_tradeoff",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "87946d2",
+  "generated_at": "2026-11-22T12:50:33",
+  "config": {
+    "caps": [
+      1,
+      2,
+      3,
+      5,
+      1000
+    ],
+    "docs": 5,
+    "chunks": 16,
+    "salts": 8,
+    "config": "zero_cost zh, uncalibrated defaults"
+  },
+  "results": {
+    "1": {
+      "label": "1",
+      "separation": {
+        "null_mean": 0.839,
+        "null_p95": 1.059,
+        "marked_mean": 1.199,
+        "marked_min": 1.0,
+        "n_samples": 40
+      },
+      "operational": {
+        "fpr_existence": 0.0,
+        "tpr": 0.0,
+        "n": 16
+      }
+    },
+    "2": {
+      "label": "2",
+      "separation": {
+        "null_mean": 1.032,
+        "null_p95": 1.311,
+        "marked_mean": 1.35,
+        "marked_min": 1.092,
+        "n_samples": 40
+      },
+      "operational": {
+        "fpr_existence": 0.0,
+        "tpr": 0.3125,
+        "n": 16
+      }
+    },
+    "3": {
+      "label": "3",
+      "separation": {
+        "null_mean": 1.172,
+        "null_p95": 1.461,
+        "marked_mean": 1.484,
+        "marked_min": 1.178,
+        "n_samples": 40
+      },
+      "operational": {
+        "fpr_existence": 0.0,
+        "tpr": 0.625,
+        "n": 16
+      }
+    },
+    "5": {
+      "label": "5",
+      "separation": {
+        "null_mean": 1.181,
+        "null_p95": 1.503,
+        "marked_mean": 1.611,
+        "marked_min": 1.142,
+        "n_samples": 40
+      },
+      "operational": {
+        "fpr_existence": 0.1875,
+        "tpr": 0.75,
+        "n": 16
+      }
+    },
+    "1000": {
+      "label": "no cap",
+      "separation": {
+        "null_mean": 1.32,
+        "null_p95": 1.73,
+        "marked_mean": 1.641,
+        "marked_min": 1.28,
+        "n_samples": 40
+      },
+      "operational": {
+        "fpr_existence": 0.3125,
+        "tpr": 0.75,
+        "n": 16
+      }
+    }
+  }
+}

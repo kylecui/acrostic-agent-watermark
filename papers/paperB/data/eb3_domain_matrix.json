@@ -1,0 +1,149 @@
+{
+  "experiment": "eb3_domain_matrix",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "87946d2",
+  "generated_at": "2026-11-22T12:52:04",
+  "config": {
+    "domains": [
+      "demo_in_domain",
+      "en_literature",
+      "zh_literature",
+      "code_comment",
+      "short_fragments",
+      "repetitive_template"
+    ],
+    "size": 2500,
+    "n_users": 50,
+    "codec": "zero_cost",
+    "config": "explicit-salt path"
+  },
+  "results": {
+    "demo_in_domain": {
+      "n": 29,
+      "uncalibrated": {
+        "fpr_existence": 0.069,
+        "fpr_attribution": 0.0,
+        "n": 29,
+        "tpr": 0.4828
+      },
+      "calibrated_xdomain": {
+        "fpr_existence": 0.0345,
+        "fpr_attribution": 0.0,
+        "n": 29,
+        "tpr": 1.0
+      },
+      "calibrated_matched": {
+        "fpr_existence": 0.4667,
+        "fpr_attribution": 0.0,
+        "n": 15,
+        "tpr": 1.0
+      }
+    },
+    "en_literature": {
+      "n": 100,
+      "uncalibrated": {
+        "fpr_existence": 0.0,
+        "fpr_attribution": 0.0,
+        "n": 100,
+        "tpr": 0.04
+      },
+      "calibrated_xdomain": {
+        "fpr_existence": 0.43,
+        "fpr_attribution": 0.0,
+        "n": 100,
+        "tpr": 0.95
+      },
+      "calibrated_matched": {
+        "fpr_existence": 0.06,
+        "fpr_attribution": 0.0,
+        "n": 50,
+        "tpr": 0.74
+      }
+    },
+    "zh_literature": {
+      "n": 100,
+      "uncalibrated": {
+        "fpr_existence": 0.03,
+        "fpr_attribution": 0.01,
+        "n": 100,
+        "tpr": 0.62
+      },
+      "calibrated_xdomain": {
+        "fpr_existence": 0.55,
+        "fpr_attribution": 0.01,
+        "n": 100,
+        "tpr": 0.98
+      },
+      "calibrated_matched": {
+        "fpr_existence": 0.0,
+        "fpr_attribution": 0.0,
+        "n": 50,
+        "tpr": 0.98
+      }
+    },
+    "code_comment": {
+      "n": 25,
+      "uncalibrated": {
+        "fpr_existence": 0.0,
+        "fpr_attribution": 0.0,
+        "n": 25,
+        "tpr": 0.12
+      },
+      "calibrated_xdomain": {
+        "fpr_existence": 0.08,
+        "fpr_attribution": 0.0,
+        "n": 25,
+        "tpr": 1.0
+      },
+      "calibrated_matched": {
+        "fpr_existence": 0.0769,
+        "fpr_attribution": 0.0,
+        "n": 13,
+        "tpr": 1.0
+      }
+    },
+    "short_fragments": {
+      "n": 56,
+      "uncalibrated": {
+        "fpr_existence": 0.0179,
+        "fpr_attribution": 0.0,
+        "n": 56,
+        "tpr": 0.0893
+      },
+      "calibrated_xdomain": {
+        "fpr_existence": 0.0893,
+        "fpr_attribution": 0.0,
+        "n": 56,
+        "tpr": 0.9286
+      },
+      "calibrated_matched": {
+        "fpr_existence": 0.0357,
+        "fpr_attribution": 0.0,
+        "n": 28,
+        "tpr": 0.9643
+      }
+    },
+    "repetitive_template": {
+      "n": 100,
+      "uncalibrated": {
+        "fpr_existence": 0.68,
+        "fpr_attribution": 0.21,
+        "n": 100,
+        "tpr": 1.0
+      },
+      "calibrated_xdomain": {
+        "fpr_existence": 0.84,
+        "fpr_attribution": 0.11,
+        "n": 100,
+        "tpr": 1.0
+      },
+      "calibrated_matched": {
+        "fpr_existence": 0.02,
+        "fpr_attribution": 0.0,
+        "n": 50,
+        "tpr": 1.0
+      }
+    }
+  }
+}

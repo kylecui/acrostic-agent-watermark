@@ -1,0 +1,41 @@
+{
+  "experiment": "eb7_template_mitigation",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "87946d2",
+  "generated_at": "2026-11-22T12:54:16",
+  "config": {
+    "n_texts": 100,
+    "n_users": 50,
+    "prefilter": "unique-sentence ratio < 0.5"
+  },
+  "results": {
+    "none": {
+      "mode": "none",
+      "n_passed": 50,
+      "n_skipped": 0,
+      "fpr_existence_passed": 0.74,
+      "fpr_attribution_passed": 0.28,
+      "prefilter_reject_rate": 0.0,
+      "would_be_fp_in_skipped": 0
+    },
+    "calibrated": {
+      "mode": "calibrated",
+      "n_passed": 50,
+      "n_skipped": 0,
+      "fpr_existence_passed": 0.0,
+      "fpr_attribution_passed": 0.0,
+      "prefilter_reject_rate": 0.0,
+      "would_be_fp_in_skipped": 0
+    },
+    "prefilter": {
+      "mode": "prefilter",
+      "n_passed": 0,
+      "n_skipped": 50,
+      "fpr_existence_passed": 0.0,
+      "fpr_attribution_passed": 0.0,
+      "prefilter_reject_rate": 1.0,
+      "would_be_fp_in_skipped": 0
+    }
+  }
+}
