@@ -1,0 +1,61 @@
+{
+  "experiment": "ea2_paraphrase_attack",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "7a101ad",
+  "generated_at": "2026-11-22T15:26:11",
+  "config": {
+    "n_texts": 50,
+    "strengths": [
+      15,
+      30,
+      50
+    ],
+    "uid": 7,
+    "model": "Qwen2.5-32B"
+  },
+  "results": {
+    "15": {
+      "calibrated": {
+        "tp": 1,
+        "attr_ok": 0,
+        "abstain": 0,
+        "n": 50
+      },
+      "uncalibrated": {
+        "tp": 1,
+        "attr_ok": 0,
+        "abstain": 0,
+        "n": 50
+      }
+    },
+    "30": {
+      "calibrated": {
+        "tp": 0,
+        "attr_ok": 0,
+        "abstain": 0,
+        "n": 50
+      },
+      "uncalibrated": {
+        "tp": 0,
+        "attr_ok": 0,
+        "abstain": 0,
+        "n": 50
+      }
+    },
+    "50": {
+      "calibrated": {
+        "tp": 0,
+        "attr_ok": 0,
+        "abstain": 0,
+        "n": 50
+      },
+      "uncalibrated": {
+        "tp": 0,
+        "attr_ok": 0,
+        "abstain": 0,
+        "n": 50
+      }
+    }
+  }
+}

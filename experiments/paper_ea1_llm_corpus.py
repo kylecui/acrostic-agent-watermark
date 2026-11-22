@@ -1,15 +1,10 @@
 #!/usr/bin/env python3
 """paper_ea1_llm_corpus.py: E-A1——真实 LLM 交付物语料生成（经 SiliconFlow）。
 
-语料设计（论文 A 的目标场景：长文档交付物）：
-  zh: 咨询报告 / 法律文书 / 研究交付物，各 ~170 篇
-  en: consulting report / legal memo / research brief，各 ~170 篇
-每篇 800-1500 中文字 / 400-700 英文词；话题由 seed 生成保证多样性。
+并发版（8 工作线程，断点续跑）。费用纪律（PLAN 约束 7）：每调用落
+api_usage.jsonl；预算上限 ¥200，逼近 80% 暂停。
 
-费用纪律（PLAN §3 约束 7）：每调用落 usage JSONL；预算上限 ¥200，
-逼近 80% 暂停。断点续跑：已存在的 (lang, genre, idx) 跳过。
-
-可复现: python experiments/paper_ea1_llm_corpus.py [--n 170]
+可复现: python experiments/paper_ea1_llm_corpus.py [--n 170] [--workers 8]
 产出: papers/paperA/data/llm_corpus_{zh,en}.jsonl + api_usage.jsonl
 """
 from __future__ import annotations
@@ -19,8 +14,10 @@ import json
 import os
 import random
 import sys
+import threading
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 
 BUDGET_CNY = 200.0
 WARN_FRAC = 0.8
@@ -60,6 +57,8 @@ TOPICS_EN = ["digital transformation in manufacturing", "cross-border e-commerce
              "county-level retail networks", "prefabricated food industry",
              "smart logistics networks", "workforce reskilling", "water utility digitization"]
 
+PRICE_PER_MTOK = 1.5  # Qwen2.5-32B 估算刊价（元/百万 token）；核算以账单为准
+
 
 def call_api(model, prompt, key, max_retries=4):
     req = urllib.request.Request(
@@ -72,21 +71,22 @@ def call_api(model, prompt, key, max_retries=4):
         }).encode(),
         headers={"Authorization": f"Bearer {key}",
                  "Content-Type": "application/json"})
+    last = None
     for attempt in range(max_retries):
         try:
-            with urllib.request.urlopen(req, timeout=120) as r:
+            with urllib.request.urlopen(req, timeout=180) as r:
                 return json.load(r)
-        except Exception as e:
-            if attempt == max_retries - 1:
-                raise
+        except Exception as e:  # noqa: BLE001
+            last = e
             time.sleep(3 * (attempt + 1))
+    raise last
 
 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--n", type=int, default=170, help="每语种每体裁篇数")
-    ap.add_argument("--model-zh", default="Qwen/Qwen2.5-32B-Instruct")
-    ap.add_argument("--model-en", default="Qwen/Qwen2.5-32B-Instruct")
+    ap.add_argument("--workers", type=int, default=8)
+    ap.add_argument("--model", default="Qwen/Qwen2.5-32B-Instruct")
     args = ap.parse_args()
 
     key = os.environ["SILICONFLOW_API_KEY"]
@@ -95,20 +95,14 @@ def main() -> None:
     os.makedirs(outdir, exist_ok=True)
     usage_path = os.path.join(outdir, "api_usage.jsonl")
 
-    # 价格（SiliconFlow 官方刊价，元/百万 token）；估算用 prompt+completion 合计
-    PRICE_PER_MTOK = 1.5  # Qwen2.5-32B 约价；消费数字在 usage.jsonl 留真值便于核算
-    spent = 0.0
-
     jobs = []
     for i in range(args.n):
         for genre, instr in ZH_GENRES:
             topic = TOPICS_ZH[rng.randrange(len(TOPICS_ZH))]
-            jobs.append(("zh", genre, i, args.model_zh,
-                         f"话题：{topic}。{instr}"))
+            jobs.append(("zh", genre, i, args.model, f"话题：{topic}。{instr}"))
         for genre, instr in EN_GENRES:
             topic = TOPICS_EN[rng.randrange(len(TOPICS_EN))]
-            jobs.append(("en", genre, i, args.model_en,
-                         f"Topic: {topic}. {instr}"))
+            jobs.append(("en", genre, i, args.model, f"Topic: {topic}. {instr}"))
 
     done = set()
     for lang in ("zh", "en"):
@@ -118,32 +112,44 @@ def main() -> None:
                 d = json.loads(line)
                 done.add((lang, d["genre"], d["idx"]))
 
-    total = len(jobs)
-    for j, (lang, genre, idx, model, prompt) in enumerate(jobs):
-        if (lang, genre, idx) in done:
-            continue
-        if spent >= BUDGET_CNY * WARN_FRAC:
-            print(f"[预算告警] 已花费约 ¥{spent:.2f}，暂停（续跑请重跑本脚本）")
-            break
+    todo = [jb for jb in jobs if (jb[0], jb[1], jb[2]) not in done]
+    total = len(todo)
+    lock = threading.Lock()
+    spent_list = [0.0]
+    finished = [0]
+
+    def worker(job):
+        lang, genre, idx, model, prompt = job
+        with lock:
+            if spent_list[0] >= BUDGET_CNY * WARN_FRAC:
+                return
         d = call_api(model, prompt, key)
         text = d["choices"][0]["message"]["content"]
         u = d["usage"]
         cost = (u["prompt_tokens"] + u["completion_tokens"]) / 1e6 * PRICE_PER_MTOK
-        spent += cost
         rec = {"lang": lang, "genre": genre, "idx": idx, "topic_seed": prompt[:30],
-               "text": text, "model": model, "usage": u, "est_cost_cny": round(cost, 5)}
-        with open(os.path.join(outdir, f"llm_corpus_{lang}.jsonl"), "a",
-                  encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        with open(usage_path, "a", encoding="utf-8") as f:
-            f.write(json.dumps({"job": j, "model": model, "usage": u,
-                                "est_cost_cny": round(cost, 5),
-                                "spent_cum": round(spent, 3)}) + "\n")
-        if j % 25 == 0:
-            print(f"[{j}/{total}] {lang}/{genre}/{idx} 累计≈¥{spent:.2f}", flush=True)
-        time.sleep(0.4)
+               "text": text, "model": model, "usage": u,
+               "est_cost_cny": round(cost, 5)}
+        with lock:
+            spent_list[0] += cost
+            with open(os.path.join(outdir, f"llm_corpus_{lang}.jsonl"), "a",
+                      encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + chr(10))
+            with open(usage_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({"job": f"{lang}/{genre}/{idx}", "model": model,
+                                    "usage": u,
+                                    "est_cost_cny": round(cost, 5),
+                                    "spent_cum": round(spent_list[0], 3)})
+                        + chr(10))
+            finished[0] += 1
+            if finished[0] % 50 == 0:
+                print(f"[{finished[0]}/{total}] spent~{spent_list[0]:.2f}CNY",
+                      flush=True)
 
-    print(f"完成/中止。估算总花费 ≈ ¥{spent:.2f}（真值以 SiliconFlow 账单为准）")
+    with ThreadPoolExecutor(max_workers=args.workers) as ex:
+        list(ex.map(worker, todo))
+
+    print(f"done/aborted. est total ~{spent_list[0]:.2f} CNY (bill is authoritative)")
 
 
 if __name__ == "__main__":
