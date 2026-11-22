@@ -3807,6 +3807,23 @@ const POOL = {
 const rng = mulberry32(hashStr(document.getElementById('pid').value || 'anon'));
 let results = {pid:null, started_at:new Date().toISOString(), pairs:{}, spots:{}, likerts:{}};
 
+// 审阅模式（?review=1）：题目差异标红，供维护者检查题库；
+// 参与者链接切勿加该参数——标红会让 pair/spot 任务退化为找红字。
+const REVIEW = new URLSearchParams(location.search).has('review');
+const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;');
+function diffPair(a, b){
+  let i=0; while(i<a.length && i<b.length && a[i]===b[i]) i++;
+  let j=0; while(j<a.length-i && j<b.length-i && a[a.length-1-j]===b[b.length-1-j]) j++;
+  const aMid=a.slice(i,a.length-j), bMid=b.slice(i,b.length-j);
+  const red=s=> s ? `<span style="color:#c00;font-weight:600">${esc(s)}</span>` : '';
+  return [esc(a.slice(0,i))+red(aMid)+esc(a.slice(a.length-j)),
+          esc(b.slice(0,i))+red(bMid)+esc(b.slice(b.length-j))];
+}
+function showSent(orig, marked){
+  if(!REVIEW || orig===marked) return esc(marked);
+  return diffPair(orig, marked)[1];
+}
+
 function hashStr(s){let h=0;for(let i=0;i<s.length;i++){h=(h*31+s.charCodeAt(i))|0}return h}
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296}}
 function shuffle(arr,r){const a=arr.slice();for(let i=a.length-1;i>0;i--){const j=Math.floor(r()*(i+1));[a[i],a[j]]=[a[j],a[i]]}return a}
@@ -3821,6 +3838,12 @@ const PRACTICE = [
 
 function render(){
   if(!POOL){document.body.innerHTML='<p style="color:red">研究者尚未注入题库：把 item_pool.json 粘贴到脚本 POOL 处。</p>';return}
+  if(REVIEW){
+    const b=document.createElement('p');
+    b.style.cssText='background:#ffe9e9;border:1px solid #c99;padding:8px 12px;border-radius:6px';
+    b.innerHTML='<b>审阅模式</b>：题目差异已标红。参与者链接请勿加 <code>?review</code>——标红会使 pair/spot 任务失效。';
+    document.body.insertBefore(b, document.body.children[1]);
+  }
   const p = document.getElementById('practice');
   PRACTICE.forEach((it,i)=>{
     const d=document.createElement('div');d.className='sent';
@@ -3842,9 +3865,12 @@ function render(){
   const pe = document.getElementById('pairs');
   order.forEach((idx,k)=>{
     const it=POOL.pair_items[idx]; const swap=rng()<0.5;
-    const first=swap?it.marked:it.orig, second=swap?it.orig:it.marked;
+    let Ashow, Bshow;
+    if(REVIEW){ const [ha, hb] = diffPair(it.orig, it.marked);
+      Ashow = swap ? hb : ha; Bshow = swap ? ha : hb;
+    } else { Ashow = esc(swap?it.marked:it.orig); Bshow = esc(swap?it.orig:it.marked); }
     const d=document.createElement('div');d.className='sent';
-    d.innerHTML=`${k+1}.<br>A：${first}<br>B：${second}<br>
+    d.innerHTML=`${k+1}.<br>A：${Ashow}<br>B：${Bshow}<br>
       <label><input type="radio" name="pa${idx}" value="A" onclick="results.pairs[${idx}]={c:'A',m:'${swap?'B':'A'}'}"> A 更自然</label>
       <label><input type="radio" name="pa${idx}" value="B" onclick="results.pairs[${idx}]={c:'B',m:'${swap?'B':'A'}'}"> B 更自然</label>`;
     pe.appendChild(d);
@@ -3857,7 +3883,8 @@ function render(){
     .concat(POOL.spot_orig.map((x,i)=>({...x,type:'orig',idx:i}))), rng);
   const se = document.getElementById('spots');
   spots.forEach((it,k)=>{
-    const shown = it.type==='marked'?it.marked:it.orig;
+    const shown = REVIEW ? showSent(it.orig, it.marked)
+                         : esc(it.type==='marked'?it.marked:it.orig);
     const id = it.type==='marked' ? 'm'+it.idx : 'o'+it.idx;
     const d=document.createElement('div');d.className='sent';
     d.innerHTML=`${k+1}. 「${shown}」<br>
@@ -3873,7 +3900,7 @@ function render(){
   shuffle(POOL.likert_items.map((x,i)=>i), rng).forEach((idx,k)=>{
     const it=POOL.likert_items[idx];
     const d=document.createElement('div');d.className='sent';
-    d.innerHTML=`${k+1}. 「${it.marked}」<br><span class="likert">
+    d.innerHTML=`${k+1}. 「${showSent(it.orig, it.marked)}」<br><span class="likert">
       ${[1,2,3,4,5].map(v=>`<label><input type="radio" name="lk${idx}" value="${v}" onclick="results.likerts[${idx}]=${v}"> ${v}</label>`).join('')}
       </span>`;
     le.appendChild(d);
