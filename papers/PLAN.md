@@ -228,7 +228,13 @@ M8 初稿 → M9 arXiv → M10 Findings 投稿（若有富余则 workshop 并行
 | W3 | E-B5–E-B7 + claims.md | E-B6/E-B7 已提前完成；E-B7b（自然模板域）登记为补测 | 部分提前 |
 | W4 | 初稿 | 论文 B 全文完成（8 节+附录，数字核对 12/12） | **完成** |
 | W5 | 内审修改 | 六纪律逐条过，DECISIONS D-03 留痕；留尾：本机无 pdflatex，编译验证列 W6 前置 | **完成** |
-| W6 | arXiv 提交 | — | 未开始 |
+| W6 | arXiv 提交 | 提交包+指南就绪（papers/submission/）；**点击动作阻塞：环境无 arXiv 凭据**（PLAN 严格阻塞条） | 待所有者 |
+
+**追加完成（超原计划）**：E-A0（未编辑基线 100/100）、E-A2b/E-A2c
+（default 词典改写：存在性微升、归因仍零——"非词典规模问题"入文）、
+E-A4（PostMark 嵌入管线本环境复现，阳性对照 TPR@1%FPR=1.0）、
+论文 A 全文、双论文 tectonic 编译零错误、main 推送 origin
+（v0.15.1 含标定护栏）、paper 分支推送 origin。
 
 **新发现登记（将进论文）**：
 - N1（E-B3）：标定语料过少（14 篇）时域内标定也不可靠（demo 域 FPR 46.7%）
