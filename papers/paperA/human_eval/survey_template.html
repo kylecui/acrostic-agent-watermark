@@ -3850,13 +3850,15 @@ function render(){
     pe.appendChild(d);
   });
 
+  // 渲染时携带原始池索引：indexOf 在展开副本上恒返回 -1 曾导致全部
+  // marked 题共享 name="sp-1"（单选组串组，只能保留一个选择）——修复为 idx 字段
   const spots = shuffle(
-    POOL.spot_marked.map(x=>({...x,type:'marked'}))
-    .concat(POOL.spot_orig.map(x=>({...x,type:'orig'}))), rng);
+    POOL.spot_marked.map((x,i)=>({...x,type:'marked',idx:i}))
+    .concat(POOL.spot_orig.map((x,i)=>({...x,type:'orig',idx:i}))), rng);
   const se = document.getElementById('spots');
   spots.forEach((it,k)=>{
     const shown = it.type==='marked'?it.marked:it.orig;
-    const id = it.type==='marked'?POOL.spot_marked.indexOf(it):'o'+POOL.spot_orig.indexOf(it);
+    const id = it.type==='marked' ? 'm'+it.idx : 'o'+it.idx;
     const d=document.createElement('div');d.className='sent';
     d.innerHTML=`${k+1}. 「${shown}」<br>
       <label><input type="radio" name="sp${id}" value="yes" onclick="results.spots['${id}']={a:'yes'}"> 被人为改动</label>
