@@ -57,7 +57,3 @@ invalid_env_mismatch；N4 作为论文的可复现性发现（§6 讨论）。
 
 **教训**：`git add -A` 前先确认 .gitattributes 的 LFS 范围与大文件
 落地路径；实验产物目录（models/、.venv/）应先入 .gitignore 再工作。
-EOF
-
-**教训**：`git add -A` 前先确认 .gitattributes 的 LFS 范围与大文件
-落地路径；实验产物目录（models/、.venv/）应先入 .gitignore 再工作。
