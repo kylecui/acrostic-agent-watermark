@@ -284,3 +284,55 @@ class TestCalibrationGuards:
             warn_mod.simplefilter("always")
             wm.calibrate_null_model(corpus)
         assert not any("零词典命中" in str(x.message) for x in w)
+
+
+class TestBoundaryFragmentGuard:
+    """v0.15.2 跨词界碎片守卫（owner 实测"注价值务"病句的回归锁定）。
+
+    前向最大匹配会把 注意|义务 切成 注意|意义|务——"意义"是横跨两个
+    真词边界的假词元，直接替换同组词会产生病句。守卫：raw 尾字+右邻
+    字（或左邻字+raw 首字）构成大词典真词即保守跳过。
+    """
+
+    CASE = ("同时对侵权行为应负有注意义务，根据法律法规的规定，"
+            "承担相应民事责任。")
+    KEY = bytes(range(32))
+
+    def test_spurious_fragment_not_replaced(self):
+        from aawm.keys import derive_session_salt
+        wm_text = None
+        # 与盲评页同一派生盐路径（canonical 不变式），确定性复现
+        canon_probe = self.CASE  # 单句场景 canonical 与原文相同词集合
+        salt = derive_session_salt(self.KEY, canon_probe, nonce=0)
+        from aawm.greenlist import build_zero_cost_zh_codec
+        codec = build_zero_cost_zh_codec(self.KEY, salt)
+        marked = codec.embed(self.CASE, 0x1, rng=random.Random(1))
+        assert "注价值务" not in marked, f"跨界替换病句回归: {marked}"
+        assert "注意义务" in marked
+
+    def test_standalone_word_still_replaces(self):
+        """守卫不能误伤合法替换：独立语境的 意义 在目标色不符时仍被换。"""
+        from aawm.greenlist import build_zero_cost_zh_codec
+        from aawm.keys import derive_session_salt, generate_session_salt
+        text = "这件事的意义不大，可以后续再讨论。"
+        replaced = False
+        for n in range(8):
+            salt = derive_session_salt(self.KEY, text, nonce=n)
+            codec = build_zero_cost_zh_codec(self.KEY, salt)
+            marked = codec.embed(text, 0xFFFF, rng=random.Random(n))
+            if "意义" not in marked:
+                replaced = True
+                break
+        assert replaced, "8 个盐下独立意义的竟无一次被替换——守卫过严？"
+
+    def test_guard_conservative_only_skips(self):
+        """守卫触发时文本必须原样保留（跳过≠改写）。"""
+        from aawm.greenlist import build_zero_cost_zh_codec
+        from aawm.keys import derive_session_salt
+        salt = derive_session_salt(self.KEY, self.CASE, nonce=0)
+        codec = build_zero_cost_zh_codec(self.KEY, salt)
+        marked = codec.embed(self.CASE, 0x1, rng=random.Random(1))
+        # 除合法替换外，句子骨架（去词典词后）应保持一致
+        import re
+        strip = lambda t: re.sub(r"[，。]", "", t)
+        assert len(strip(marked)) == len(strip(self.CASE))
