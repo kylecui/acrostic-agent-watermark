@@ -7,3 +7,12 @@
 - 关键结论（预研）：PostMark 检测统计量是**存在比例**（compute_presence，
   有界 [0,1]），不是 z 检验计票——F1（相关票膨胀）按构造不适用于它；
   F2/F3 可测（E-B5）。此"不同统计量 ⇒ 不同坑剖面"本身作为论文论点。
+
+## 获取方式（不入库，.gitignore）
+```bash
+git clone --depth 1 https://github.com/lilakk/PostMark.git papers/third_party/PostMark
+cd papers/third_party/PostMark
+curl -LO https://huggingface.co/datasets/yapeichang/PostMark/resolve/main/filtered_data_100k_unique_250w_sentbound_nomic_embs.pkl
+curl -LO https://huggingface.co/datasets/yapeichang/PostMark/resolve/main/paragram_xxl.pkl
+```
+（预研时所用 commit：347f159）
