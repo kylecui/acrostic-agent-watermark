@@ -67,6 +67,7 @@ def main() -> None:
     ap.add_argument("--strengths", default="15,30,50")
     ap.add_argument("--workers", type=int, default=6)
     ap.add_argument("--uid", type=int, default=7)
+    ap.add_argument("--codec", default="zero_cost")
     args = ap.parse_args()
     strengths = [int(x) for x in args.strengths.split(",")]
     key = os.environ["SILICONFLOW_API_KEY"]
@@ -81,9 +82,10 @@ def main() -> None:
             break
 
     half = max(10, len(texts) // 2)
-    wm_cal = Watermarker(master_key=bytes(range(32)), codec_mode="zero_cost")
-    pc.fit_calibration(wm_cal, texts[:half])
-    wm_uncal = Watermarker(master_key=bytes(range(32)), codec_mode="zero_cost")
+    wm_cal = Watermarker(master_key=bytes(range(32)), codec_mode=args.codec)
+    if args.codec != "default":
+        pc.fit_calibration(wm_cal, texts[:half])  # default 模式无自适应路径
+    wm_uncal = Watermarker(master_key=bytes(range(32)), codec_mode=args.codec)
 
     results = {s: {"calibrated": {"tp": 0, "attr_ok": 0, "abstain": 0, "n": 0},
                    "uncalibrated": {"tp": 0, "attr_ok": 0, "abstain": 0, "n": 0}}

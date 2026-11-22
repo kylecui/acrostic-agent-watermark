@@ -1,12 +1,12 @@
 \section{Introduction}
-Statistical watermarks over text are being deployed to attribute leaked
-documents and flag AI-generated content. Vendors and papers quote detection
-rates of 90--100\% under calibration, and deployments inherit these numbers
-as operating expectations. This paper shows that three systematic failure
-modes---each easy to trigger with ordinary text, each invisible to the
-standard evaluation protocol (same-domain calibration, random test
-splits)---collapse those numbers on real corpora, and that two of the three
-have no fix inside the watermark itself.
+Statistical watermarks for text are increasingly deployed to attribute
+leaked documents and to flag AI-generated content. Reported detection rates
+of 90--100\% under calibration become operating expectations for
+deployments. This paper demonstrates that three systematic failure modes,
+each trivially triggered with ordinary text and each invisible to the
+standard evaluation protocol (same-domain calibration, random test splits),
+collapse these rates on real corpora---and that two of the three cannot be
+fixed inside the watermark itself.
 
 We study \emph{lexical statistical watermarks}: the verifier applies a
 keyed, deterministic predicate to words, accumulates per-band vote counts,
