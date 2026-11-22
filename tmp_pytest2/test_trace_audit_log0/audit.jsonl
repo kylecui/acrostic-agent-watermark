@@ -1,0 +1,2 @@
+{"ts": "2026-11-22T10:16:55.721+00:00", "op": "embed", "source": "cli", "text_sha256": "62f3db1bc78e1241", "uid": 9, "user": null, "reliability": "high", "weak_embed": false, "capacity": 0, "n_bits": 0, "key_version": 1, "uid_redundancy": 1}
+{"ts": "2026-11-22T10:16:55.949+00:00", "op": "trace", "source": "cli", "text_sha256": "62f3db1bc78e1241", "watermarked": true, "uid": 1, "user": null, "attribution_confidence": 0.5, "attribution_abstain": false, "key_version": 1, "dict_version_match": true}

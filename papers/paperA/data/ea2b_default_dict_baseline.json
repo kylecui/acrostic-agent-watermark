@@ -1,0 +1,18 @@
+{
+  "experiment": "ea2b_default_dict_baseline",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "81875b6",
+  "generated_at": "2026-11-22T18:08:30",
+  "config": {
+    "n_texts": 30,
+    "codec": "default full lexicon"
+  },
+  "results": {
+    "baseline_no_attack": {
+      "tpr": 1.0,
+      "attr": 1.0,
+      "n": 30
+    }
+  }
+}

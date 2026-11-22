@@ -1,0 +1,25 @@
+{
+  "session_salt": "1dace5d11ea4f45bac8be3e248621a28",
+  "user_id": 4660,
+  "user_alias": "agent-cuiyin",
+  "has_seal": true,
+  "existence_score": 26.859796603156514,
+  "codec_mode": "default",
+  "bands": [],
+  "capacity": 0,
+  "n_bits": 0,
+  "margin_ratio": 0.0,
+  "weak_embed": false,
+  "reliability": "high",
+  "key_version": 1,
+  "dict_version": "ac97f2b95b1c7a23",
+  "uid_layout": [],
+  "seal": {
+    "merkle_root": "1a8c0cb4f88b9e6857cfbffa9276bebbdb1afe5836ee9fc57e7a896a784e4ec8",
+    "para_hashes": [
+      "fe4c7149b0aa467da4bf402f732d4c169d541be04eda12725bfac9ca690d409d"
+    ],
+    "aad": "1234",
+    "version": 1
+  }
+}

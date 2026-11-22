@@ -15,6 +15,7 @@
 | C8 | 缓解分级：域内标定把模板文 FPR/误归因清零（0/0 vs 74%/28%）；相似度预过滤在本病态域拒绝率 100%（饱和，自然模板域需补测——登记为 E-B7b） | E-B7 | eb7_template_mitigation.json | §5.3 | verified（E-B7b 待补） |
 | C9 | F1 是方案类别性质：在与 AAWM 无共享代码的独立参考实现（最小 z 检验水印）上，同一攻击构造产生相同的 |z|∝√N 增长曲线（N=640 时 25.3） | E-B4 | eb4_reference_impl.json | §3.4 | verified |
 | C10 | F2 严重度依赖统计量：PostMark（存在比例统计量）跨域 FPR 仅 0.5–5%（vs AAWM z 检验 19–84%）；F1/F3 按构造不适用于有界统计量（模板文得分恒 0） | E-B5 | eb5_postmark_transfer.json | §4/§6 | verified |
-| C11 | PostMark 官方 artifact 跨环境不可逐位复现：embedding table 为每次初始化随机子集（N4） | E-B5 废弃的阳性对照 | eb5_postmark_transfer.json | §6/附录 | verified（作为可复现性发现） |
+| C11 | PostMark 官方 artifact 跨环境不可逐位复现：embedding table 为每次初始化随机子集（N4） | E-B5 废弃的阳性对照 | eb5_postmark_transfer.json | 附录 | verified（作为可复现性发现） |
+| C11b | 本环境完整复跑官方嵌入管线后阳性对照恢复：TPR@1%FPR=1.0（n=60，presence 0.10→0.57） | E-A4 | papers/paperA/data/ea4_postmark_pipeline.json | §4.2 | verified |
 | C12 | 自然度模板（槽位填充，unique 句比例 0.47–0.76）：未标定 FPR 30%、域内标定 2%、误归因为 0——误归因需要极端重复（纯复制），存在性误报在"有变化的模板"上依然高发 | E-B7b | eb7b_natural_template.json | §5.3 | verified |
 | C13 | 相似度预过滤在自然模板域拒绝率 12%（仅拦截 <0.5 极端桶），放行集 FPR 4.6%——预过滤是兜底而非主缓解，主缓解仍是域内标定 | E-B7b | 同上 | §5.3 | verified |

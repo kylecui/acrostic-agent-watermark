@@ -1,0 +1,383 @@
+{
+  "experiment": "ea4_postmark_pipeline",
+  "seed": 20260911,
+  "aawm_version": "0.15.1",
+  "commit": "81875b6",
+  "generated_at": "2026-11-22T18:22:32",
+  "config": {
+    "n": 60,
+    "inserter": "Qwen/Qwen2.5-32B-Instruct",
+    "embedder": "nomic",
+    "ratio": 0.12,
+    "loop": "official v2 (10-word sublists, presence>=0.5, <=3 tries)"
+  },
+  "results": {
+    "n": 60,
+    "tpr_at_1pct_fpr": 1.0,
+    "threshold_at_1pct_fpr": 0.2292,
+    "presence_gold_mean": 0.1021,
+    "presence_marked_mean": 0.568,
+    "rows": [
+      {
+        "i": 1,
+        "presence_gold": 0.1304,
+        "presence_marked": 0.6207,
+        "n_words": 23
+      },
+      {
+        "i": 3,
+        "presence_gold": 0.037,
+        "presence_marked": 0.5476,
+        "n_words": 27
+      },
+      {
+        "i": 5,
+        "presence_gold": 0.0556,
+        "presence_marked": 0.72,
+        "n_words": 18
+      },
+      {
+        "i": 2,
+        "presence_gold": 0.122,
+        "presence_marked": 0.4923,
+        "n_words": 41
+      },
+      {
+        "i": 0,
+        "presence_gold": 0.1556,
+        "presence_marked": 0.6078,
+        "n_words": 45
+      },
+      {
+        "i": 4,
+        "presence_gold": 0.1702,
+        "presence_marked": 0.5303,
+        "n_words": 47
+      },
+      {
+        "i": 7,
+        "presence_gold": 0.1591,
+        "presence_marked": 0.5873,
+        "n_words": 44
+      },
+      {
+        "i": 10,
+        "presence_gold": 0.08,
+        "presence_marked": 0.4872,
+        "n_words": 25
+      },
+      {
+        "i": 6,
+        "presence_gold": 0.0545,
+        "presence_marked": 0.5325,
+        "n_words": 55
+      },
+      {
+        "i": 8,
+        "presence_gold": 0.1091,
+        "presence_marked": 0.6543,
+        "n_words": 55
+      },
+      {
+        "i": 9,
+        "presence_gold": 0.2157,
+        "presence_marked": 0.7101,
+        "n_words": 51
+      },
+      {
+        "i": 12,
+        "presence_gold": 0.1429,
+        "presence_marked": 0.625,
+        "n_words": 49
+      },
+      {
+        "i": 11,
+        "presence_gold": 0.1731,
+        "presence_marked": 0.5775,
+        "n_words": 52
+      },
+      {
+        "i": 17,
+        "presence_gold": 0.0,
+        "presence_marked": 0.5714,
+        "n_words": 10
+      },
+      {
+        "i": 14,
+        "presence_gold": 0.1765,
+        "presence_marked": 0.5217,
+        "n_words": 34
+      },
+      {
+        "i": 13,
+        "presence_gold": 0.12,
+        "presence_marked": 0.463,
+        "n_words": 50
+      },
+      {
+        "i": 15,
+        "presence_gold": 0.0638,
+        "presence_marked": 0.5694,
+        "n_words": 47
+      },
+      {
+        "i": 16,
+        "presence_gold": 0.2292,
+        "presence_marked": 0.6094,
+        "n_words": 48
+      },
+      {
+        "i": 18,
+        "presence_gold": 0.1471,
+        "presence_marked": 0.6,
+        "n_words": 34
+      },
+      {
+        "i": 20,
+        "presence_gold": 0.0385,
+        "presence_marked": 0.5676,
+        "n_words": 26
+      },
+      {
+        "i": 23,
+        "presence_gold": 0.2727,
+        "presence_marked": 0.5,
+        "n_words": 11
+      },
+      {
+        "i": 24,
+        "presence_gold": 0.1,
+        "presence_marked": 0.5385,
+        "n_words": 10
+      },
+      {
+        "i": 26,
+        "presence_gold": 0.0,
+        "presence_marked": 0.5,
+        "n_words": 7
+      },
+      {
+        "i": 19,
+        "presence_gold": 0.1321,
+        "presence_marked": 0.5972,
+        "n_words": 53
+      },
+      {
+        "i": 25,
+        "presence_gold": 0.0312,
+        "presence_marked": 0.5682,
+        "n_words": 32
+      },
+      {
+        "i": 27,
+        "presence_gold": 0.1212,
+        "presence_marked": 0.5366,
+        "n_words": 33
+      },
+      {
+        "i": 22,
+        "presence_gold": 0.1489,
+        "presence_marked": 0.5846,
+        "n_words": 47
+      },
+      {
+        "i": 21,
+        "presence_gold": 0.1429,
+        "presence_marked": 0.6491,
+        "n_words": 42
+      },
+      {
+        "i": 31,
+        "presence_gold": 0.0,
+        "presence_marked": 0.4737,
+        "n_words": 9
+      },
+      {
+        "i": 33,
+        "presence_gold": 0.0714,
+        "presence_marked": 0.5556,
+        "n_words": 14
+      },
+      {
+        "i": 28,
+        "presence_gold": 0.1538,
+        "presence_marked": 0.6444,
+        "n_words": 26
+      },
+      {
+        "i": 35,
+        "presence_gold": 0.1111,
+        "presence_marked": 0.6667,
+        "n_words": 18
+      },
+      {
+        "i": 32,
+        "presence_gold": 0.0833,
+        "presence_marked": 0.4848,
+        "n_words": 24
+      },
+      {
+        "i": 34,
+        "presence_gold": 0.0,
+        "presence_marked": 0.5185,
+        "n_words": 21
+      },
+      {
+        "i": 38,
+        "presence_gold": 0.0556,
+        "presence_marked": 0.5455,
+        "n_words": 18
+      },
+      {
+        "i": 30,
+        "presence_gold": 0.1522,
+        "presence_marked": 0.614,
+        "n_words": 46
+      },
+      {
+        "i": 40,
+        "presence_gold": 0.0,
+        "presence_marked": 0.4545,
+        "n_words": 9
+      },
+      {
+        "i": 37,
+        "presence_gold": 0.1667,
+        "presence_marked": 0.6939,
+        "n_words": 36
+      },
+      {
+        "i": 41,
+        "presence_gold": 0.1304,
+        "presence_marked": 0.697,
+        "n_words": 23
+      },
+      {
+        "i": 36,
+        "presence_gold": 0.14,
+        "presence_marked": 0.6267,
+        "n_words": 50
+      },
+      {
+        "i": 39,
+        "presence_gold": 0.0417,
+        "presence_marked": 0.5938,
+        "n_words": 48
+      },
+      {
+        "i": 29,
+        "presence_gold": 0.1429,
+        "presence_marked": 0.5294,
+        "n_words": 56
+      },
+      {
+        "i": 43,
+        "presence_gold": 0.04,
+        "presence_marked": 0.5352,
+        "n_words": 50
+      },
+      {
+        "i": 47,
+        "presence_gold": 0.0,
+        "presence_marked": 0.6,
+        "n_words": 11
+      },
+      {
+        "i": 48,
+        "presence_gold": 0.0,
+        "presence_marked": 0.625,
+        "n_words": 6
+      },
+      {
+        "i": 45,
+        "presence_gold": 0.1951,
+        "presence_marked": 0.4615,
+        "n_words": 41
+      },
+      {
+        "i": 42,
+        "presence_gold": 0.1111,
+        "presence_marked": 0.4935,
+        "n_words": 54
+      },
+      {
+        "i": 49,
+        "presence_gold": 0.0,
+        "presence_marked": 0.4286,
+        "n_words": 28
+      },
+      {
+        "i": 44,
+        "presence_gold": 0.1538,
+        "presence_marked": 0.5833,
+        "n_words": 52
+      },
+      {
+        "i": 50,
+        "presence_gold": 0.08,
+        "presence_marked": 0.5556,
+        "n_words": 25
+      },
+      {
+        "i": 46,
+        "presence_gold": 0.0769,
+        "presence_marked": 0.5231,
+        "n_words": 52
+      },
+      {
+        "i": 55,
+        "presence_gold": 0.0588,
+        "presence_marked": 0.6087,
+        "n_words": 17
+      },
+      {
+        "i": 54,
+        "presence_gold": 0.0909,
+        "presence_marked": 0.5686,
+        "n_words": 33
+      },
+      {
+        "i": 53,
+        "presence_gold": 0.0645,
+        "presence_marked": 0.641,
+        "n_words": 31
+      },
+      {
+        "i": 57,
+        "presence_gold": 0.0455,
+        "presence_marked": 0.4545,
+        "n_words": 22
+      },
+      {
+        "i": 52,
+        "presence_gold": 0.125,
+        "presence_marked": 0.5968,
+        "n_words": 48
+      },
+      {
+        "i": 51,
+        "presence_gold": 0.1591,
+        "presence_marked": 0.5156,
+        "n_words": 44
+      },
+      {
+        "i": 58,
+        "presence_gold": 0.06,
+        "presence_marked": 0.5303,
+        "n_words": 50
+      },
+      {
+        "i": 59,
+        "presence_gold": 0.1111,
+        "presence_marked": 0.5667,
+        "n_words": 45
+      },
+      {
+        "i": 56,
+        "presence_gold": 0.1765,
+        "presence_marked": 0.6234,
+        "n_words": 51
+      }
+    ]
+  }
+}

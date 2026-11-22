@@ -1,0 +1,61 @@
+\section{System Design}
+\label{sec:design}
+
+\subsection{Threat model and positioning}
+The embedding party is an agent platform that serves many users from one
+or more black-box LLMs. The verifying party is an auditor holding the same
+master key. Attackers may copy, excerpt, reorder, or lightly edit leaked
+text; they may also rephrase it with an LLM. We do not claim resistance to
+determined semantic rephrasing (\S\ref{sec:robustness}) or key compromise;
+the target is \emph{internal leak tracing}, where leaked documents are
+typically reposted unedited or with structural edits.
+
+\subsection{Channel B: keyed greenlist statistics with user coding}
+Let $K$ be the master key and $s$ a session salt. A word predicate
+$\green_K(w)$ (top bit of $\mathrm{HMAC}(K_{\green}, w)$) and a band map
+$b_K(w)$ (mod 16) are derived per salt. A curated synonym dictionary
+(136 zero-cost Chinese groups; 133 English groups) partitions into bands;
+groups whose members are monochromatic under the keyed predicate are
+dropped per salt. A 16-bit user id is encoded as band target colors; the
+embedder rewrites every dictionary-word occurrence toward its band's target
+color, preserving casing, rejecting boundary-unsafe and adjacent-duplicate
+choices. The detector recomputes per-band counts with a per-word vote cap
+(c=3) to defeat correlated-vote inflation, thresholds $\sum_b |z_b|$ for
+existence, and decodes the uid from band signs; a registry of candidates is
+scored by soft dot-product matching, and low-margin or colliding candidates
+abstain. Capacity adapts to the text (active bands $k$), with optional
+$r$-fold redundant layouts (same bit across $r$ interleaved bands) for
+crop resistance; uids are masked to the $k$-bit space and matched against
+the registry accordingly.
+
+\subsection{Channel A: paragraph binding}
+A Merkle tree over HMAC'd normalized paragraphs, with the uid as associated
+data, gives tamper evidence: any edit, insertion, deletion, or reordering
+fails root verification and localizes to paragraphs. Channel A is brittle
+by design (a paraphrase breaks it); Channel B is robust by design; the two
+together separate ``was it edited'' (A) from ``who leaked it'' (B).
+
+\subsection{Abstain protocol and evidence mask}
+Attribution outputs (uid, user, confidence) only when a margin gate and a
+score-ratio floor pass; otherwise the verdict is \emph{attribution
+abstain}. The v0.15 evidence mask records which decoded bits rest on actual
+band evidence, so archived-uid cross-checks treat missing bands as
+``unverifiable'' rather than ``contradicting''---eliminating a class of
+false-abstain failures on no-attack round trips.
+
+\subsection{Derived salts and metadata-loss recovery}
+The default session salt is $\mathrm{HMAC}(K, \mathrm{sha256}(C(t)),
+\mathrm{nonce})$ where $C(t)$ replaces in-group words by their group head:
+embedding only swaps within groups, so $C$ is invariant between original
+and watermarked text. Tracing enumerates nonce candidates (0--5 plus
+head-truncation variants) and keeps the best score-to-threshold margin,
+so a trace succeeds even if \emph{all} per-document metadata is lost. Older
+random-salt documents without metadata remain untraceable (documented
+limitation).
+
+\subsection{Operational layer}
+Adapters for OpenAI SDK, LangChain, LiteLLM proxy, AutoGen, and CrewAI
+wrap outputs with fail-open middleware (any embedding error passes the
+original text through); an HTTP service and CLI expose embed/trace; an
+append-only audit log and Prometheus metrics cover operations. Key
+rotation keeps old watermarks traceable via versioned keys.

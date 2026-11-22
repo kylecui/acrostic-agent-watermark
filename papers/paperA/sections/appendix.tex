@@ -1,0 +1,17 @@
+\section{Generation Prompts and Cost (E-A1)}
+Prompts are genre instructions plus a topic drawn from a 24-topic pool
+(manufacturing digitization, cross-border compliance, urban renewal,
+EV supply chain, healthcare data governance, eldercare systems, energy
+optimization, vocational education, carbon accounting, IP protection,
+livestream regulation, personal-data protection, and 12 others per
+language), temperature 0.9, max 1,400 tokens. Per-call usage and estimated
+cost are logged in \texttt{api\_usage.jsonl}; total estimated cost for all
+1,020 documents is 1.11 CNY (provider billing is authoritative).
+
+\section{Embedding-Pipeline Reproduction of a Presence-Ratio Baseline}
+As an external sanity check on statistic families, we re-ran PostMark's
+official embedding pipeline (nomic word selection locally; insertion loop
+faithful to the official v2 protocol: 10-word sublists, literal-presence
+acceptance $\ge$0.5, $\le$3 attempts) with a 32B API inserter on C4 gold
+texts. Detection-side results and the cross-environment embedding-table
+nondeterminism we encountered are reported in the companion paper.

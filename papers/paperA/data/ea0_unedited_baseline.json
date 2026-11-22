@@ -1,0 +1,24 @@
+{
+  "experiment": "ea0_unedited_baseline",
+  "seed": 20260911,
+  "aawm_version": "0.15.0",
+  "commit": "81875b6",
+  "generated_at": "2026-11-22T18:06:46",
+  "config": {
+    "n_texts": 100,
+    "uid": 7,
+    "config": "zero_cost zh, explicit salt+meta path, no attack"
+  },
+  "results": {
+    "uncalibrated": {
+      "tpr": 1.0,
+      "attr_exact": 1.0,
+      "n": 100
+    },
+    "calibrated": {
+      "tpr": 1.0,
+      "attr_exact": 1.0,
+      "n": 100
+    }
+  }
+}

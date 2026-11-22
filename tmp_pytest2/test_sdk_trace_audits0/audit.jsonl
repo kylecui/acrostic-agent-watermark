@@ -1,0 +1,2 @@
+{"ts": "2026-11-22T10:16:51.267+00:00", "op": "embed", "source": "sdk", "text_sha256": "81df68052a884e03", "text_chars": 803, "user_id": 5, "user_alias": null, "reliability": "low", "weak_embed": true, "capacity": 3, "n_bits": 3, "key_version": 1}
+{"ts": "2026-11-22T10:16:51.270+00:00", "op": "trace", "source": "sdk", "text_sha256": "a02f4e3741b0c7b7", "text_chars": 807, "watermarked": false, "uid": null, "user": null, "attribution_abstain": false, "attribution_confidence": 0.0, "existence_score": 3.414213562373095, "confidence": 0.23959393420162065, "key_version": 1}

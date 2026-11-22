@@ -1,0 +1,3 @@
+{"ts": "2026-11-22T10:16:51.238+00:00", "op": "trace", "source": "cli", "text_sha256": "abababababababab"}
+{"ts": "2026-11-22T10:16:51.238+00:00", "op": "embed", "source": "server", "uid": 5}
+{"ts": "2026-11-22T10:16:51.238+00:00", "op": "find_meta", "source": "cli"}
