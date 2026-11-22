@@ -3894,7 +3894,7 @@ async function exportResults(){
   // 在线模式：直传服务器（file:// 打开时 fetch 会失败，自动降级为下载）
   let submitted=false;
   try{
-    const resp=await fetch('/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:payload});
+    const resp=await fetch('submit',{method:'POST',headers:{'Content-Type':'application/json'},body:payload});
     const j=await resp.json();
     submitted = resp.ok && j.ok;
   }catch(e){ submitted=false; }
