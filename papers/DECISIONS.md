@@ -57,3 +57,19 @@ invalid_env_mismatch；N4 作为论文的可复现性发现（§6 讨论）。
 
 **教训**：`git add -A` 前先确认 .gitattributes 的 LFS 范围与大文件
 落地路径；实验产物目录（models/、.venv/）应先入 .gitignore 再工作。
+
+## D-2026-11-23-01：执行环境合规勘误（runner 声明补录）
+
+**事实**：本分支全部测试（444 项）、实验脚本（E-B*/E-A*）、GPU 推理、
+CDP、ssh/scp 均在**宿主 Windows**执行（Python 3.13.14 venv；GPU 为
+.venv torch 2.6+cu124），未使用 harness 的 docker 沙箱，且全程未按契约
+声明 runner。实测 `sh` 沙箱（runner=docker）可用但无 pip/pytest/fastapi，
+本仓库亦无 verify 镜像，故宿主回退在事实上不可避免——但"不可避免"须
+以声明为前提，此前缺失。
+
+**处置**：本条即为补录的 runner 声明；宿主路径直接代价（heredoc 反斜杠
+损坏、/tmp 错位、cmd is not defined）已上报 harness 仓库 #14/#15/#16，
+并对 #13 补充沙箱裸 Python 的证据。
+
+**后续纪律**：纯 python 测试/实验优先尝试 `sh` 沙箱；每次宿主执行在
+回合内显式写明 runner=host-windows；GPU/CDP/ssh 属宿主专属，按例外处理。
