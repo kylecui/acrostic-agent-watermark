@@ -3946,7 +3946,9 @@ async function exportResults(){
     submitted = resp.ok && j.ok;
   }catch(e){ submitted=false; }
   if(submitted){
-    o.innerHTML='<p>✓ 已提交到服务器，感谢参与！可关闭本页。</p>';
+    o.innerHTML='<p>✓ 已提交到服务器，感谢参与！可关闭本页。</p>'
+      + '<p style="font-size:13px;color:#666">研究说明：本问卷考察的是文本中细微措辞变化
+      对人的可感知程度，结果用于学术研究的文本质量基线，仅作聚合统计。</p>';
   }else{
     o.innerHTML='<p>在线提交不可用（本地打开模式）。请下载 JSON 发给招募方：</p>';
     const blob=new Blob([payload],{type:'application/json'});
