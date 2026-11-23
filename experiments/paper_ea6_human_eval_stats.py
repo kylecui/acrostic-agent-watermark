@@ -47,9 +47,15 @@ def main() -> None:
     det_hits = det_n = fa_hits = fa_n = 0
     likert_vals = []
     excluded = []
+    # 按 pid 去重（保留 started_at 最早的一份），与服务端 aggregate 一致
+    by_pid = {}
     for f in files:
         r = json.load(open(f, encoding="utf-8"))
         pid = r.get("pid", os.path.basename(f))
+        if pid not in by_pid or str(r.get("started_at", "")) < str(by_pid[pid].get("started_at", "")):
+            by_pid[pid] = r
+    files_dedup = list(by_pid.items())
+    for pid, r in files_dedup:
         # 剔除：spot 误报率极端(乱答) —— 单被试层面先收集
         sp = r.get("spots", {})
         orig_ids = [k for k in sp if str(k).startswith("o")]
@@ -70,8 +76,11 @@ def main() -> None:
         for idx, rec in r.get("pairs", {}).items():
             pool["pair_items"][int(idx)]  # 校验 item 存在
             pair_n += 1
-            # 记录语义（survey_template v1.1）：c=被选侧, m=水印侧
-            if isinstance(rec, dict) and rec.get("c") == rec.get("m"):
+            # 记录语义: 新记录 mk=水印侧; 旧记录 m 实际是原句侧(模板曾写反)
+            if not isinstance(rec, dict):
+                continue
+            hit = (rec.get("c") == rec.get("mk")) if "mk" in rec else (rec.get("c") != rec.get("m"))
+            if hit:
                 pair_hits += 1
         for k, v in sp.items():
             a = v.get("a")

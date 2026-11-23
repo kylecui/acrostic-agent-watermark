@@ -56,6 +56,9 @@ def aggregate():
     likert_vals = []
     rows = []
     excluded = []
+    # 按 pid 去重（同一页面会话反复点导出会重复提交）：保留最早一份
+    by_pid = {}
+    n_files = 0
     for fn in files:
         if fn.startswith("."):
             continue  # .counter 等隐藏文件非响应
@@ -65,7 +68,13 @@ def aggregate():
             continue
         if not isinstance(r, dict):
             continue  # 防御: 非对象 JSON（如纯数字文件）不当响应
+        n_files += 1
         pid = r.get("pid", fn)
+        prev = by_pid.get(pid)
+        if prev is None or str(r.get("started_at", "")) < str(prev.get("started_at", "")):
+            by_pid[pid] = r
+    dupes = max(0, n_files - len(by_pid))
+    for pid, r in sorted(by_pid.items()):
         sp = r.get("spots", {})
         orig_ids = [k for k in sp if str(k).startswith("o")]
         fa_r = sum(1 for k in orig_ids if sp[k].get("a") == "yes") / max(1, len(orig_ids))
@@ -83,7 +92,11 @@ def aggregate():
             continue
         for rec in r.get("pairs", {}).values():
             pair_n += 1
-            if isinstance(rec, dict) and rec.get("c") == rec.get("m"):
+            # 记录语义: 新记录 mk=水印侧; 旧记录 m 实际是原句侧(模板曾写反)
+            if not isinstance(rec, dict):
+                continue
+            hit = (rec.get("c") == rec.get("mk")) if "mk" in rec else (rec.get("c") != rec.get("m"))
+            if hit:
                 pair_hits += 1
         for k, v in sp.items():
             a = v.get("a")
@@ -108,6 +121,7 @@ def aggregate():
 
     return {
         "n_included": len(rows), "n_excluded": len(excluded),
+        "n_duplicates_dropped": dupes,
         "excluded": excluded, "responses": rows,
         "pair": {"n": pair_n, "marked_preferred": pair_hits,
                  "rate": round(pair_hits / max(1, pair_n), 4),
@@ -138,7 +152,7 @@ def render_admin(a):
 table{{border-collapse:collapse}}td,th{{border:1px solid #ccc;padding:4px 10px}}
 .kpi{{font-size:20px;font-weight:600}}</style></head><body>
 <h1>盲评汇总（{a['generated_at']}）</h1>
-<p>有效 {a['n_included']} 人 / 剔除 {a['n_excluded']} 人</p>
+<p>有效 {a['n_included']} 人 / 剔除 {a['n_excluded']} 人 / 重复提交已合并 {a['n_duplicates_dropped']} 份</p>
 <h2>预注册判据对照</h2>
 <ul>
 <li>pair 水印侧更自然率: <span class="kpi">{pr}</span>

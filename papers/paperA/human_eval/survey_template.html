@@ -3891,8 +3891,8 @@ function render(){
     } else { Ashow = esc(swap?it.marked:it.orig); Bshow = esc(swap?it.orig:it.marked); }
     const d=document.createElement('div');d.className='sent';
     d.innerHTML=`${k+1}.<br>A：${Ashow}<br>B：${Bshow}<br>
-      <label><input type="radio" name="pa${idx}" value="A" onclick="results.pairs[${idx}]={c:'A',m:'${swap?'B':'A'}'}"> A 更自然</label>
-      <label><input type="radio" name="pa${idx}" value="B" onclick="results.pairs[${idx}]={c:'B',m:'${swap?'B':'A'}'}"> B 更自然</label>`;
+      <label><input type="radio" name="pa${idx}" value="A" onclick="results.pairs[${idx}]={c:'A',mk:'${swap?'A':'B'}'}"> A 更自然</label>
+      <label><input type="radio" name="pa${idx}" value="B" onclick="results.pairs[${idx}]={c:'B',mk:'${swap?'A':'B'}'}"> B 更自然</label>`;
     pe.appendChild(d);
   });
 
@@ -3949,6 +3949,8 @@ async function exportResults(){
     o.innerHTML='<p>✓ 已提交到服务器，感谢参与！可关闭本页。</p>'
       + '<p style="font-size:13px;color:#666">研究说明：本问卷考察的是文本中细微措辞变化
       对人的可感知程度，结果用于学术研究的文本质量基线，仅作聚合统计。</p>';
+    // 防重复提交：成功后禁用导出按钮
+    document.querySelectorAll('button').forEach(b=>{ if(b.textContent.includes('导出')) b.disabled=true; });
   }else{
     o.innerHTML='<p>在线提交不可用（本地打开模式）。请下载 JSON 发给招募方：</p>';
     const blob=new Blob([payload],{type:'application/json'});
