@@ -38,3 +38,4 @@ models/
 papers/paperA/human_eval/responses/
 *.aux
 *.out
+.pi/
